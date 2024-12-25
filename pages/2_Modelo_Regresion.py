@@ -21,6 +21,21 @@ from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler, MinMaxScaler, LabelEncoder
 from sklearn.impute import SimpleImputer
 
+# Config
+
+def new_line():
+    st.write("\n")
+ 
+# with st.sidebar:
+#    st.image("./assets/sb-quick.png",  use_container_width=True)
+
+
+st.markdown("<h1 style='text-align: center; '>⚡NeuraTrain🧠</h1>", unsafe_allow_html=True)
+st.markdown("🧬Modelo de regresión/clasificación para datos tabulares(csv)", unsafe_allow_html=True)
+st.markdown("👉🏻Utiliza el panel lateral para comenzar a crear tu red neuronal artifical!", unsafe_allow_html=True)
+
+st.divider()
+
 
 # Inicializar estado de la sesión
 if 'graph_positions' not in st.session_state:
@@ -157,38 +172,37 @@ from sklearn.preprocessing import StandardScaler
 
 # Cargar y dividir dataset
 from sklearn.preprocessing import StandardScaler
-
 def load_dataset(name, problem_type):
-    # Cargar dataset completo
+    # Cargar dataset completo con nombres de columnas correctos
     if name == "Iris":
         data = load_iris(as_frame=True)
-        df = data.frame
-        df.columns = data.feature_names + ["target"]
-        df['target'] = df['target'].map({0: 'setosa', 1: 'versicolor', 2: 'virginica'})  # Mapea las clases a texto (opcional)
+        df = data.data
+        df["species"] = pd.Series(data.target).map(dict(enumerate(data.target_names)))
     elif name == "Wine":
         data = load_wine(as_frame=True)
-        df = data.frame
-        df.columns = data.feature_names + ["target"]
+        df = data.data
+        df["wine_class"] = pd.Series(data.target).map(dict(enumerate(data.target_names)))
     elif name == "Breast Cancer":
         data = load_breast_cancer(as_frame=True)
-        df = data.frame
-        df.columns = data.feature_names + ["target"]
+        df = data.data
+        df["diagnosis"] = data.target
     elif name == "Digits":
-        data = load_digits(as_frame=True)
+        data = load_digits(as_frame=False)
         df = pd.DataFrame(data.data, columns=[f"pixel_{i}" for i in range(data.data.shape[1])])
-        df["target"] = data.target
+        df["digit"] = data.target
     elif name == "Boston Housing":
         data = fetch_california_housing(as_frame=True)
-        df = data.frame
-        df.columns = data.feature_names + ["target"]
+        df = data.data
+        df["median_value"] = data.target
     elif name == "Diabetes":
         data = load_diabetes(as_frame=True)
-        df = pd.DataFrame(data.data, columns=data.feature_names)
-        df["target"] = data.target
+        df = data.data
+        df["disease_progression"] = data.target
     else:
         raise ValueError("Dataset no soportado")
 
     return df
+
 
 
 def initialize_graph(layers):
@@ -377,7 +391,7 @@ def update_graph_with_smooth_color_transition(layers, epoch, placeholder, neuron
             # Calcular posiciones de capas
             for i, layer in enumerate(layers):
                 x_position = i * 300
-                total_neurons = layer['num_neurons'] if layer['type'] in ["Dense", "Input", "Output"] else 1
+                total_neurons = layer['neurons'] if layer['type'] in ["Dense", "Input", "Output"] else 1
 
                 # Calcular cuántos puntos representar
                 num_points = math.ceil(total_neurons / neurons_per_point)
@@ -412,7 +426,7 @@ def update_graph_with_smooth_color_transition(layers, epoch, placeholder, neuron
             # Dibujar puntos o formas de las capas (frente)
             for i, layer in enumerate(layers):
                 x_position = i * 300
-                total_neurons = layer['num_neurons'] if layer['type'] in ["Dense", "Input", "Output"] else 1
+                total_neurons = layer['neurons'] if layer['type'] in ["Dense", "Input", "Output"] else 1
                 num_points = math.ceil(total_neurons / neurons_per_point)
                 y_positions = list(range(-num_points // 2, num_points // 2 + 1))[:num_points]
 
@@ -514,11 +528,23 @@ def log_event(log_placeholder, message):
 
 
 # Función para entrenar el modelo con gráficos dinámicos y métricas
+# Función para entrenar el modelo con gráficos dinámicos
 def train_model(layers, hyperparams, preview_placeholder, dynamic_placeholder):
-    # Validar que los datos estén divididos
-    if not st.session_state.get("dataset_split", False):
-        st.error("El dataset no está dividido correctamente. Configura el dataset antes de entrenar.")
-        return
+    st.session_state['logs'] = []
+    preview_placeholder.empty()
+
+    # Configurar columnas para el layout
+    col_dynamic, col_metrics = st.columns([6, 1])  # Gráfico dinámico y métricas
+
+    log_placeholder = st.empty()
+
+    # Placeholder para el gráfico dinámico
+    with col_dynamic:
+        dynamic_graph_placeholder = st.empty()
+
+    # Placeholders para métricas
+    loss_chart_placeholder = col_metrics.empty()
+    accuracy_chart_placeholder = col_metrics.empty()
 
     # Recuperar splits desde el estado de la sesión
     splits = st.session_state.get("splits")
@@ -539,6 +565,8 @@ def train_model(layers, hyperparams, preview_placeholder, dynamic_placeholder):
         if y_val is not None:
             y_val = to_categorical(y_val, num_classes)
         y_test = to_categorical(y_test, num_classes)
+    else:
+        num_classes = 1  # Regresión
 
     # Definir input shape
     input_shape = (X_train.shape[1],)
@@ -579,21 +607,23 @@ def train_model(layers, hyperparams, preview_placeholder, dynamic_placeholder):
     epochs = hyperparams["epochs"]
     batch_size = hyperparams["batch_size"]
 
-    # Inicializar métricas y gráficos
-    log_placeholder = dynamic_placeholder.empty()
-    loss_chart_placeholder = st.empty()
-    accuracy_chart_placeholder = st.empty()
-
+    # Inicializar listas para almacenar las métricas
     loss_values = []
     accuracy_values = []
 
-    # Entrenamiento por época
     for epoch in range(epochs):
-        start_time = time.time()
-
-        # Log de inicio
+        epoch_start_time = time.time()
         st.session_state['logs'].append(f"Época {epoch + 1}/{epochs} iniciada.")
         log_placeholder.text_area("Logs del Entrenamiento", "\n".join(st.session_state['logs']), height=300)
+
+        # Mostrar gráfico dinámico
+        update_graph_with_smooth_color_transition(
+            layers,
+            epoch,
+            dynamic_graph_placeholder,
+            neurons_per_point=12,
+            animation_steps=15
+        )
 
         # Entrenar una época
         history = model.fit(
@@ -606,45 +636,33 @@ def train_model(layers, hyperparams, preview_placeholder, dynamic_placeholder):
 
         # Almacenar métricas
         loss = history.history['loss'][0]
-        val_loss = history.history['val_loss'][0] if "val_loss" in history.history else None
-        accuracy = history.history['accuracy'][0] if "accuracy" in history.history else None
-        val_accuracy = history.history['val_accuracy'][0] if "val_accuracy" in history.history else None
-
+        accuracy = history.history.get('accuracy', [None])[0]
         loss_values.append(loss)
         if accuracy is not None:
             accuracy_values.append(accuracy)
 
         # Actualizar gráficos de métricas
-        with loss_chart_placeholder:
-            fig_loss, ax_loss = plt.subplots()
-            ax_loss.plot(range(1, len(loss_values) + 1), loss_values, label="Pérdida")
-            if val_loss is not None:
-                ax_loss.plot(range(1, len(loss_values) + 1), [val_loss] * len(loss_values), label="Pérdida Validación", linestyle="--")
-            ax_loss.set_title("Pérdida")
-            ax_loss.legend()
-            loss_chart_placeholder.pyplot(fig_loss)
+        fig_loss, ax_loss = plt.subplots(figsize=(4, 2))
+        ax_loss.plot(range(1, len(loss_values) + 1), loss_values, label="Pérdida", marker='o', color='blue')
+        ax_loss.set_title("Pérdida")
+        ax_loss.grid(True)
+        loss_chart_placeholder.pyplot(fig_loss, clear_figure=True)
 
-        with accuracy_chart_placeholder:
-            if accuracy is not None:
-                fig_accuracy, ax_accuracy = plt.subplots()
-                ax_accuracy.plot(range(1, len(accuracy_values) + 1), accuracy_values, label="Precisión")
-                if val_accuracy is not None:
-                    ax_accuracy.plot(range(1, len(accuracy_values) + 1), [val_accuracy] * len(accuracy_values), label="Precisión Validación", linestyle="--")
-                ax_accuracy.set_title("Precisión")
-                ax_accuracy.legend()
-                accuracy_chart_placeholder.pyplot(fig_accuracy)
+        if accuracy is not None:
+            fig_accuracy, ax_accuracy = plt.subplots(figsize=(4, 2))
+            ax_accuracy.plot(range(1, len(accuracy_values) + 1), accuracy_values, label="Precisión", marker='o', color='green')
+            ax_accuracy.set_title("Precisión")
+            ax_accuracy.grid(True)
+            accuracy_chart_placeholder.pyplot(fig_accuracy, clear_figure=True)
 
         # Log de fin de época
-        elapsed_time = time.time() - start_time
-        st.session_state['logs'].append(f"Época {epoch + 1} completada en {elapsed_time:.2f} segundos.")
+        epoch_end_time = time.time()
+        st.session_state['logs'].append(f"Época {epoch + 1} completada en {epoch_end_time - epoch_start_time:.2f}s.")
         log_placeholder.text_area("Logs del Entrenamiento", "\n".join(st.session_state['logs']), height=300)
-        
-        time.sleep(0.5)  # Ajuste para evitar rebotes
 
     # Guardar modelo entrenado
     st.session_state["modelDownload"] = model
     st.success("Entrenamiento finalizado con éxito.")
-
 
 
 # Función para mostrar métricas del entrenamiento

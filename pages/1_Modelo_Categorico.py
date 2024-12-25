@@ -16,6 +16,19 @@ from keras.datasets import mnist, fashion_mnist, cifar10
 from keras.utils import to_categorical
 from tensorflow.keras.preprocessing.image import ImageDataGenerator
 
+# Config
+
+def new_line():
+    st.write("\n")
+ 
+# with st.sidebar:
+#    st.image("./assets/sb-quick.png",  use_container_width=True)
+
+
+st.markdown("<h1 style='text-align: center; '>⚡NeuraTrain🧠</h1>", unsafe_allow_html=True)
+st.markdown("🧬Modelo de clasificación de imagenes", unsafe_allow_html=True)
+st.markdown("👉🏻Utiliza el panel lateral para comenzar a crear tu red neuronal artifical!", unsafe_allow_html=True)
+st.divider()
 
 
 # Inicializar estado de la sesión
@@ -710,6 +723,11 @@ def train_model(layers, hyperparams, preview_placeholder, dynamic_placeholder):
 
     # Guardar el modelo después del entrenamiento
     st.session_state['modelDownload'] = model
+
+
+
+
+
 
 
 current_intermediate_layers = max(0, len(st.session_state['layer_config']) - 6)
