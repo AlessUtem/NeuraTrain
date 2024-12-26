@@ -91,7 +91,16 @@ if "scaling_done" not in st.session_state:
 if "dataset_split" not in st.session_state:
     st.session_state["dataset_split"] = False
 
-
+if 'loss_values' not in st.session_state:
+    st.session_state['loss_values'] = []
+if 'accuracy_values' not in st.session_state:
+    st.session_state['accuracy_values'] = []
+if 'val_loss_values' not in st.session_state:
+    st.session_state['val_loss_values'] = []
+if 'val_accuracy_values' not in st.session_state:
+    st.session_state['val_accuracy_values'] = []
+if 'problem_type' not in st.session_state:
+    st.session_state['problem_type'] = "Clasificación"  # Valor predeterminado
 
 
 # Inyectar CSS para capturar el color de fondo
@@ -391,7 +400,7 @@ def update_graph_with_smooth_color_transition(layers, epoch, placeholder, neuron
             # Calcular posiciones de capas
             for i, layer in enumerate(layers):
                 x_position = i * 300
-                total_neurons = layer['neurons'] if layer['type'] in ["Dense", "Input", "Output"] else 1
+                total_neurons = layer['num_neurons'] if layer['type'] in ["Dense", "Input", "Output"] else 1
 
                 # Calcular cuántos puntos representar
                 num_points = math.ceil(total_neurons / neurons_per_point)
@@ -426,7 +435,7 @@ def update_graph_with_smooth_color_transition(layers, epoch, placeholder, neuron
             # Dibujar puntos o formas de las capas (frente)
             for i, layer in enumerate(layers):
                 x_position = i * 300
-                total_neurons = layer['neurons'] if layer['type'] in ["Dense", "Input", "Output"] else 1
+                total_neurons = layer['num_neurons'] if layer['type'] in ["Dense", "Input", "Output"] else 1
                 num_points = math.ceil(total_neurons / neurons_per_point)
                 y_positions = list(range(-num_points // 2, num_points // 2 + 1))[:num_points]
 
@@ -502,6 +511,7 @@ def update_graph_with_smooth_color_transition(layers, epoch, placeholder, neuron
 
 
 
+
 def preview_graph(layers, placeholder, neurons_per_point=12):
     """
     Genera un gráfico estático con Input, capas y Output.
@@ -527,27 +537,47 @@ def log_event(log_placeholder, message):
 
 
 
-# Función para entrenar el modelo con gráficos dinámicos y métricas
+
+
+
+
+
+
 # Función para entrenar el modelo con gráficos dinámicos
+from sklearn.metrics import f1_score, precision_score, recall_score, classification_report
+import pandas as pd
+
 def train_model(layers, hyperparams, preview_placeholder, dynamic_placeholder):
+    # Limpiar logs y placeholders
     st.session_state['logs'] = []
+    st.session_state['loss_values'] = []
+    st.session_state['accuracy_values'] = []
+    st.session_state['val_loss_values'] = []
+    st.session_state['val_accuracy_values'] = []
+
+
     preview_placeholder.empty()
+    
 
-    # Configurar columnas para el layout
-    col_dynamic, col_metrics = st.columns([6, 1])  # Gráfico dinámico y métricas
+    # Configuración de contenedores para evitar desplazamiento
+    col_dynamic, col_metrics = st.columns([6, 1])  # Ajusta proporciones
 
-    log_placeholder = st.empty()
+    # Placeholder para gráfico dinámico (mantiene la posición)
+    dynamic_graph_placeholder = col_dynamic.empty()
 
-    # Placeholder para el gráfico dinámico
-    with col_dynamic:
-        dynamic_graph_placeholder = st.empty()
-
-    # Placeholders para métricas
+    # Placeholder para métricas y logs (separado del gráfico)
+    metrics_placeholder = col_metrics.empty()
+    log_placeholder = col_metrics.empty()
+    
     loss_chart_placeholder = col_metrics.empty()
     accuracy_chart_placeholder = col_metrics.empty()
 
-    # Recuperar splits desde el estado de la sesión
-    splits = st.session_state.get("splits")
+    # Recuperar datos configurados previamente
+    if not st.session_state.get("dataset_split", False):
+        st.error("El dataset no está configurado correctamente. Configúralo antes de entrenar.")
+        return
+
+    splits = st.session_state['splits']
     if len(splits) == 4:  # Entrenamiento y prueba
         X_train, X_test, y_train, y_test = splits
         X_val, y_val = None, None
@@ -557,140 +587,364 @@ def train_model(layers, hyperparams, preview_placeholder, dynamic_placeholder):
         st.error("La división del dataset no es válida. Reconfigura el dataset.")
         return
 
+    input_shape = (X_train.shape[1],)
+    problem_type = st.session_state['problem_type']
+
     # Preparar etiquetas para clasificación
-    problem_type = st.session_state["problem_type"]
     if problem_type == "Clasificación":
         num_classes = len(np.unique(y_train))
+        if np.any(y_train >= num_classes) or np.any(y_train < 0):
+            st.error("Error: Hay etiquetas fuera del rango válido para la clasificación.")
+            return
         y_train = to_categorical(y_train, num_classes)
         if y_val is not None:
             y_val = to_categorical(y_val, num_classes)
+        y_test_original = y_test  # Guardar etiquetas originales
         y_test = to_categorical(y_test, num_classes)
-    else:
-        num_classes = 1  # Regresión
 
-    # Definir input shape
-    input_shape = (X_train.shape[1],)
-
-    # Crear modelo
+    # Crear el modelo
     model = Sequential()
     for i, layer in enumerate(layers):
-        if layer["type"] == "Dense":
+        if layer['type'] == "Dense":
             model.add(Dense(
-                layer["neurons"],
-                activation=layer["activation"],
+                layer['neurons'],
+                activation=layer['activation'],
                 input_shape=input_shape if i == 0 else None
             ))
-        elif layer["type"] == "Dropout":
-            model.add(Dropout(layer["dropout_rate"]))
+        elif layer['type'] == "Dropout":
+            model.add(Dropout(layer['dropout_rate']))
 
-    # Añadir capa de salida
-    if problem_type == "Clasificación":
-        model.add(Dense(num_classes, activation="softmax"))
-        loss_function = "categorical_crossentropy"
-    else:  # Regresión
-        model.add(Dense(1, activation="linear"))
-        loss_function = "mean_squared_error"
+    # Capa de salida
+    #if problem_type == "Clasificación":
+    #    model.add(Dense(num_classes, activation="softmax"))
+    #    loss_function = "categorical_crossentropy"
+    #else:  # Regresión
+    #    model.add(Dense(1, activation="linear"))
+    #    loss_function = "mean_squared_error"
 
-    # Configurar modelo
+    # Configuración del optimizador
     optimizers = {
-        "Adam": Adam(learning_rate=hyperparams["learning_rate"]),
-        "SGD": SGD(learning_rate=hyperparams["learning_rate"]),
-        "RMSprop": RMSprop(learning_rate=hyperparams["learning_rate"])
+        "Adam": Adam(learning_rate=hyperparams['learning_rate']),
+        "SGD": SGD(learning_rate=hyperparams['learning_rate']),
+        "RMSprop": RMSprop(learning_rate=hyperparams['learning_rate'])
     }
+    optimizer = optimizers[hyperparams['optimizer']]
+    loss_function = hyperparams['loss_function']
+
+
     model.compile(
-        optimizer=optimizers[hyperparams["optimizer"]],
+        optimizer=optimizer,
         loss=loss_function,
-        metrics=["accuracy"] if problem_type == "Clasificación" else ["mae"]
+        metrics=["accuracy"] if problem_type == "Clasificación" else ["mae"]  # Precisión para clasificación, MAE para regresión
     )
 
-    # Configuración de hiperparámetros
-    epochs = hyperparams["epochs"]
-    batch_size = hyperparams["batch_size"]
-
-    # Inicializar listas para almacenar las métricas
+    # Inicialización de métricas
     loss_values = []
     accuracy_values = []
+    val_loss_values = []
+    val_accuracy_values = []
 
-    for epoch in range(epochs):
-        epoch_start_time = time.time()
-        st.session_state['logs'].append(f"Época {epoch + 1}/{epochs} iniciada.")
-        log_placeholder.text_area("Logs del Entrenamiento", "\n".join(st.session_state['logs']), height=300)
+    # Entrenamiento por épocas
+    for epoch in range(hyperparams['epochs']):
+        start_time = time.time()
+        log_event(log_placeholder, f"Época {epoch + 1}/{hyperparams['epochs']} iniciada.")
 
-        # Mostrar gráfico dinámico
+        # Animación del gráfico dinámico
         update_graph_with_smooth_color_transition(
-            layers,
+            st.session_state['graph'],
             epoch,
             dynamic_graph_placeholder,
             neurons_per_point=12,
             animation_steps=15
         )
 
-        # Entrenar una época
+        # Entrenar el modelo
         history = model.fit(
             X_train, y_train,
             validation_data=(X_val, y_val) if X_val is not None else None,
-            batch_size=batch_size,
+            batch_size=hyperparams['batch_size'],
             epochs=1,
             verbose=0
         )
 
-        # Almacenar métricas
+        # Actualizar métricas
         loss = history.history['loss'][0]
         accuracy = history.history.get('accuracy', [None])[0]
-        loss_values.append(loss)
-        if accuracy is not None:
-            accuracy_values.append(accuracy)
+        val_loss = history.history.get('val_loss', [None])[0]
+        val_accuracy = history.history.get('val_accuracy', [None])[0]
 
-        # Actualizar gráficos de métricas
-        fig_loss, ax_loss = plt.subplots(figsize=(4, 2))
-        ax_loss.plot(range(1, len(loss_values) + 1), loss_values, label="Pérdida", marker='o', color='blue')
-        ax_loss.set_title("Pérdida")
-        ax_loss.grid(True)
-        loss_chart_placeholder.pyplot(fig_loss, clear_figure=True)
-
+        st.session_state['loss_values'].append(loss)
         if accuracy is not None:
-            fig_accuracy, ax_accuracy = plt.subplots(figsize=(4, 2))
-            ax_accuracy.plot(range(1, len(accuracy_values) + 1), accuracy_values, label="Precisión", marker='o', color='green')
-            ax_accuracy.set_title("Precisión")
-            ax_accuracy.grid(True)
-            accuracy_chart_placeholder.pyplot(fig_accuracy, clear_figure=True)
+            st.session_state['accuracy_values'].append(accuracy)
+        if val_loss is not None:
+            st.session_state['val_loss_values'].append(val_loss)
+        if val_accuracy is not None:
+            st.session_state['val_accuracy_values'].append(val_accuracy)
+
+
+        # Gráfico de pérdida (aplica a ambos tipos de problemas)
+        with loss_chart_placeholder:
+            fig_loss, ax_loss = plt.subplots(figsize=(4, 2))
+            ax_loss.plot(range(1, len(st.session_state['loss_values']) + 1),
+                        st.session_state['loss_values'], marker='o', color='blue', label="Pérdida")
+            if st.session_state['val_loss_values']:
+                ax_loss.plot(range(1, len(st.session_state['val_loss_values']) + 1),
+                            st.session_state['val_loss_values'], linestyle="--", color='red', label="Validación")
+            ax_loss.set_title("Pérdida")
+            ax_loss.grid(True)
+            ax_loss.legend()
+            loss_chart_placeholder.pyplot(fig_loss, clear_figure=True)
+
+        # Gráfico de precisión (solo para clasificación)
+        if problem_type == "Clasificación":
+            with accuracy_chart_placeholder:
+                if st.session_state['accuracy_values']:
+                    fig_accuracy, ax_accuracy = plt.subplots(figsize=(4, 2))
+                    ax_accuracy.plot(range(1, len(st.session_state['accuracy_values']) + 1),
+                                    st.session_state['accuracy_values'], marker='o', color='green', label="Precisión")
+                    if st.session_state['val_accuracy_values']:
+                        ax_accuracy.plot(range(1, len(st.session_state['val_accuracy_values']) + 1),
+                                        st.session_state['val_accuracy_values'], linestyle="--", color='orange', label="Validación")
+                    ax_accuracy.set_title("Precisión")
+                    ax_accuracy.grid(True)
+                    ax_accuracy.legend()
+                    accuracy_chart_placeholder.pyplot(fig_accuracy, clear_figure=True)
+        else:
+            with accuracy_chart_placeholder:
+                if accuracy is not None:
+                    fig_accuracy, ax_accuracy = plt.subplots(figsize=(4, 2))
+                    ax_accuracy.plot(range(1, len(accuracy_values) + 1), accuracy_values, marker='o', color='green', label="Precisión")
+                    if val_accuracy is not None:
+                        ax_accuracy.plot(range(1, len(val_accuracy_values) + 1), val_accuracy_values, linestyle="--", color='orange', label="Validación")
+                    ax_accuracy.set_title("Precisión")
+                    ax_accuracy.grid(True)
+                    ax_accuracy.legend()
+                    accuracy_chart_placeholder.pyplot(fig_accuracy, clear_figure=True)
+
+        # Verificar valores de las métricas y asignar 'N/A' si son None
+        loss_str = f"{loss:.4f}" if loss is not None else "N/A"
+        accuracy_str = f"{accuracy:.4f}" if accuracy is not None else "N/A"
+        val_loss_str = f"{val_loss:.4f}" if val_loss is not None else "N/A"
+        val_accuracy_str = f"{val_accuracy:.4f}" if val_accuracy is not None else "N/A"
 
         # Log de fin de época
-        epoch_end_time = time.time()
-        st.session_state['logs'].append(f"Época {epoch + 1} completada en {epoch_end_time - epoch_start_time:.2f}s.")
-        log_placeholder.text_area("Logs del Entrenamiento", "\n".join(st.session_state['logs']), height=300)
+        elapsed_time = time.time() - start_time
+        log_event(
+            log_placeholder,
+            f"Época {epoch + 1} completada en {elapsed_time:.2f} segundos. "
+            f"Pérdida: {loss_str}, Precisión: {accuracy_str}, "
+            f"Pérdida Validación: {val_loss_str}, Precisión Validación: {val_accuracy_str}"
+        )
+
+    # Calcular métricas finales
+    # Mostrar métricas finales según el tipo de problema
+    if problem_type == "Clasificación":
+        y_pred = np.argmax(model.predict(X_test), axis=1)
+        f1 = f1_score(y_test_original, y_pred, average='weighted')
+        precision = precision_score(y_test_original, y_pred, average='weighted')
+        recall = recall_score(y_test_original, y_pred, average='weighted')
+
+        st.write("### Métricas Finales - Clasificación")
+        st.write(f"**F1 Score:** {f1:.4f}")
+        st.write(f"**Precisión (Precision):** {precision:.4f}")
+        st.write(f"**Recall:** {recall:.4f}")
+        st.text(classification_report(y_test_original, y_pred))
+    else:
+        st.write("### Métricas Finales - Regresión")
+        final_loss = st.session_state['loss_values'][-1]
+        st.write(f"**Pérdida Final (MAE):** {final_loss:.4f}")
+        if st.session_state['val_loss_values']:
+            final_val_loss = st.session_state['val_loss_values'][-1]
+            st.write(f"**Pérdida Validación Final (MAE):** {final_val_loss:.4f}")
+
+
 
     # Guardar modelo entrenado
     st.session_state["modelDownload"] = model
     st.success("Entrenamiento finalizado con éxito.")
 
 
-# Función para mostrar métricas del entrenamiento
-def plot_training_metrics():
-    if 'training_history' in st.session_state:
-        history = st.session_state['training_history']
-        fig, ax = plt.subplots(1, 2, figsize=(12, 5))
 
-        # Gráfico de pérdida
-        ax[0].plot(history["loss"], label="Pérdida - Entrenamiento")
-        ax[0].plot(history["val_loss"], label="Pérdida - Validación")
-        ax[0].set_title("Pérdida durante el Entrenamiento")
-        ax[0].set_xlabel("Épocas")
-        ax[0].set_ylabel("Pérdida")
-        ax[0].legend()
 
-        # Gráfico de precisión (si es clasificación)
-        if st.session_state['problem_type'] == "Clasificación":
-            ax[1].plot(history["accuracy"], label="Precisión - Entrenamiento")
-            ax[1].plot(history["val_accuracy"], label="Precisión - Validación")
-            ax[1].set_title("Precisión durante el Entrenamiento")
-            ax[1].set_xlabel("Épocas")
-            ax[1].set_ylabel("Precisión")
-            ax[1].legend()
+
+def train_model_classification(layers, hyperparams, preview_placeholder, dynamic_placeholder):
+    # Limpiar logs y placeholders
+    st.session_state['logs'] = []
+    st.session_state['loss_values'] = []
+    st.session_state['accuracy_values'] = []
+    st.session_state['val_loss_values'] = []
+    st.session_state['val_accuracy_values'] = []
+
+    preview_placeholder.empty()
+
+    # Configuración de contenedores
+    col_dynamic, col_metrics = st.columns([6, 1])
+    dynamic_graph_placeholder = col_dynamic.empty()
+    log_placeholder = st.empty()
+
+    # Validar splits
+    if not st.session_state.get("dataset_split", False):
+        st.error("El dataset no está configurado correctamente.")
+        return
+
+    splits = st.session_state['splits']
+    if len(splits) == 4:
+        X_train, X_test, y_train, y_test = splits
+        X_val, y_val = None, None
+    elif len(splits) == 6:
+        X_train, X_val, X_test, y_train, y_val, y_test = splits
+    else:
+        st.error("La división del dataset no es válida. Reconfigura el dataset.")
+        return
+
+    # Preparar etiquetas
+    num_classes = len(np.unique(y_train))
+    y_train = to_categorical(y_train, num_classes)
+    if y_val is not None:
+        y_val = to_categorical(y_val, num_classes)
+    y_test_original = y_test
+    y_test = to_categorical(y_test, num_classes)
+
+    # Crear modelo
+    input_shape = (X_train.shape[1],)
+    model = Sequential()
+    for i, layer in enumerate(layers):
+        if layer['type'] == "Dense":
+            model.add(Dense(layer['neurons'], activation=layer['activation'], input_shape=input_shape if i == 0 else None))
+        elif layer['type'] == "Dropout":
+            model.add(Dropout(layer['dropout_rate']))
+    model.add(Dense(num_classes, activation="softmax"))
+
+    # Configurar optimizador y compilar modelo
+    optimizer = Adam(learning_rate=hyperparams['learning_rate'])
+    model.compile(optimizer=optimizer, loss="categorical_crossentropy", metrics=["accuracy"])
+
+    # Entrenar modelo
+    for epoch in range(hyperparams['epochs']):
+        log_event(log_placeholder, f"Época {epoch + 1}/{hyperparams['epochs']} iniciada.")
+
+        if X_val is not None and y_val is not None:
+            # Con conjunto de validación
+            history = model.fit(X_train, y_train, validation_data=(X_val, y_val),
+                                batch_size=hyperparams['batch_size'], epochs=1, verbose=0)
         else:
-            ax[1].remove()  # Si es regresión, no muestra precisión
+            # Sin conjunto de validación
+            history = model.fit(X_train, y_train, batch_size=hyperparams['batch_size'], 
+                                epochs=1, verbose=0)
 
-        st.pyplot(fig)
+        # Registrar métricas
+        train_loss = history.history['loss'][0]
+        train_accuracy = history.history['accuracy'][0]
+        log_event(log_placeholder, f"Época {epoch + 1}: Pérdida en entrenamiento: {train_loss:.4f}")
+        log_event(log_placeholder, f"Época {epoch + 1}: Precisión en entrenamiento: {train_accuracy:.4f}")
+
+        if X_val is not None and y_val is not None:
+            val_loss = history.history['val_loss'][0]
+            val_accuracy = history.history['val_accuracy'][0]
+            log_event(log_placeholder, f"Época {epoch + 1}: Pérdida en validación: {val_loss:.4f}")
+            log_event(log_placeholder, f"Época {epoch + 1}: Precisión en validación: {val_accuracy:.4f}")
+
+        st.session_state['loss_values'].append(train_loss)
+        st.session_state['accuracy_values'].append(train_accuracy)
+        if X_val is not None and y_val is not None:
+            st.session_state['val_loss_values'].append(val_loss)
+            st.session_state['val_accuracy_values'].append(val_accuracy)
+
+        # Actualizar visualización dinámica
+        update_graph_with_smooth_color_transition(
+            st.session_state['graph'], epoch, dynamic_graph_placeholder, neurons_per_point=10, animation_steps=30
+        )
+
+    # Métricas finales
+    y_pred = np.argmax(model.predict(X_test), axis=1)
+    f1 = f1_score(y_test_original, y_pred, average='weighted')
+    st.write(f"F1 Score (weighted): {f1:.4f}")
+    st.session_state["modelDownload"] = model
+    st.success("Entrenamiento finalizado con éxito.")
+
+
+def train_model_regression(layers, hyperparams, preview_placeholder, dynamic_placeholder):
+    # Limpiar logs y placeholders
+    st.session_state['logs'] = []
+    st.session_state['loss_values'] = []
+    st.session_state['val_loss_values'] = []
+
+    preview_placeholder.empty()
+
+    # Configuración de contenedores
+    col_dynamic, col_metrics = st.columns([6, 1])
+    dynamic_graph_placeholder = col_dynamic.empty()
+    log_placeholder = st.empty()
+
+    # Validar configuración del dataset
+    if not st.session_state.get("dataset_split", False):
+        st.error("El dataset no está configurado correctamente. Configúralo antes de entrenar.")
+        return
+
+    # Recuperar splits
+    splits = st.session_state['splits']
+    if len(splits) == 4:
+        X_train, X_test, y_train, y_test = splits
+        X_val, y_val = None, None
+    elif len(splits) == 6:
+        X_train, X_val, X_test, y_train, y_val, y_test = splits
+    else:
+        st.error("La división del dataset no es válida. Reconfigura el dataset.")
+        return
+
+    # Crear modelo
+    input_shape = (X_train.shape[1],)
+    model = Sequential()
+    for i, layer in enumerate(layers):
+        if layer['type'] == "Dense":
+            model.add(Dense(layer['neurons'], activation=layer['activation'], input_shape=input_shape if i == 0 else None))
+        elif layer['type'] == "Dropout":
+            model.add(Dropout(layer['dropout_rate']))
+    model.add(Dense(1, activation="linear"))
+
+    # Configurar optimizador y compilar modelo
+    optimizer = Adam(learning_rate=hyperparams['learning_rate'])
+    model.compile(optimizer=optimizer, loss="mean_squared_error", metrics=["mae"])
+
+    # Entrenar modelo
+    for epoch in range(hyperparams['epochs']):
+        log_event(log_placeholder, f"Época {epoch + 1}/{hyperparams['epochs']} iniciada.")
+
+        if X_val is not None and y_val is not None:
+            history = model.fit(X_train, y_train, validation_data=(X_val, y_val),
+                                batch_size=hyperparams['batch_size'], epochs=1, verbose=0)
+        else:
+            history = model.fit(X_train, y_train, batch_size=hyperparams['batch_size'], 
+                                epochs=1, verbose=0)
+
+        # Registrar métricas
+        train_loss = history.history['loss'][0]
+        train_mae = history.history['mae'][0]
+        log_event(log_placeholder, f"Época {epoch + 1}: Pérdida (MSE) en entrenamiento: {train_loss:.4f}")
+        log_event(log_placeholder, f"Época {epoch + 1}: Error absoluto medio (MAE) en entrenamiento: {train_mae:.4f}")
+
+        if X_val is not None:
+            val_loss = history.history['val_loss'][0]
+            val_mae = history.history['val_mae'][0]
+            log_event(log_placeholder, f"Época {epoch + 1}: Pérdida (MSE) en validación: {val_loss:.4f}")
+            log_event(log_placeholder, f"Época {epoch + 1}: Error absoluto medio (MAE) en validación: {val_mae:.4f}")
+
+        # Actualizar métricas para gráficos
+        st.session_state['loss_values'].append(train_loss)
+        if X_val is not None:
+            st.session_state['val_loss_values'].append(val_loss)
+
+        # Actualizar visualización dinámica
+        update_graph_with_smooth_color_transition(
+            st.session_state['graph'], epoch, dynamic_graph_placeholder, neurons_per_point=10, animation_steps=30
+        )
+
+    # Métricas finales
+    final_loss = st.session_state['loss_values'][-1]
+    st.write(f"Pérdida Final (MSE): {final_loss:.4f}")
+    st.session_state["modelDownload"] = model
+    st.success("Entrenamiento finalizado con éxito.")
+
 
 
 
@@ -793,12 +1047,6 @@ if "selected_dataset_previous" not in st.session_state or st.session_state["sele
     initialize_layer_config(st.session_state["selected_dataset"])
 
 
-# Configuración de problema y dataset
-st.sidebar.header("Configuración")
-st.session_state['problem_type'] = st.sidebar.selectbox(
-    "Seleccione el tipo de problema",
-    ["Clasificación", "Regresión"],
-)
 
 from sklearn.metrics import mean_squared_error
 
@@ -884,20 +1132,41 @@ def configure_dataset():
         ["Clasificación", "Regresión"],
         key="problem_type_selectbox"
     )
+
+    st.session_state['problem_type'] = problem_type
+
     dataset_name = st.sidebar.selectbox(
         "Seleccione el dataset",
         ["Iris", "Wine", "Breast Cancer", "Digits"] if problem_type == "Clasificación" else ["Boston Housing", "Diabetes"],
         key="dataset_name_selectbox"
     )
 
-    if st.sidebar.button("Cargar Dataset", key="load_dataset_button"):
-        # Carga el dataset completo como un DataFrame
-        df = load_dataset(dataset_name, problem_type)
-        st.session_state["dataset_loaded"] = True
-        st.session_state["full_dataset"] = df
-        st.success("Dataset cargado con éxito.")
-        st.sidebar.write("Vista previa del dataset:", df.head())
+    st.session_state['selected_dataset'] = dataset_name
 
+    if st.sidebar.button("Cargar Dataset", key="load_dataset_button"):
+    # Reiniciar el estado relacionado con el dataset al cambiarlo
+        if st.session_state.get("dataset_loaded", False):
+            st.session_state["dataset_loaded"] = False
+            st.session_state.pop("full_dataset", None)
+            st.session_state.pop("target_variable", None)
+            st.session_state.pop("X_original", None)
+            st.session_state.pop("y_original", None)
+            st.session_state.pop("splits", None)
+            st.session_state["dataset_split"] = False
+
+    # Cargar el nuevo dataset
+    df = load_dataset(dataset_name, problem_type)
+    if df.empty:
+        st.sidebar.error("El dataset cargado está vacío. Seleccione un dataset válido.")
+        st.stop()
+
+    # Guardar el dataset en el estado de la sesión
+    st.session_state["dataset_loaded"] = True
+    st.session_state["full_dataset"] = df
+    st.success("Dataset cargado con éxito.")
+    st.sidebar.write("Vista previa del dataset:", df.head())
+
+    
     # Paso 2: Selección de la variable objetivo
     if st.session_state.get("dataset_loaded", False):
         st.sidebar.subheader("Paso 2: Selección de la Variable Objetivo")
@@ -906,24 +1175,24 @@ def configure_dataset():
             st.session_state["full_dataset"].columns,
             key="target_variable_selectbox"
         )
-        st.session_state["target_variable"] = target_variable
+        if target_variable != st.session_state.get("target_variable", None):
+            st.session_state["target_variable"] = target_variable
+            st.session_state["X_original"] = st.session_state["full_dataset"].drop(columns=[target_variable]).copy()
+            st.session_state["y_original"] = st.session_state["full_dataset"][target_variable].copy()
 
-        # Separar características (X) y objetivo (y)
-        X = st.session_state["full_dataset"].drop(columns=[target_variable])
-        y = st.session_state["full_dataset"][target_variable]
+        st.sidebar.success(f"Variable objetivo seleccionada: {st.session_state['target_variable']}")
+        st.sidebar.write("Características (X):", st.session_state["X_original"].head())
+        # Verificar si y_original es un numpy.ndarray y convertirlo en un DataFrame/Series antes de usar .head()
+        if isinstance(st.session_state["y_original"], np.ndarray):
+            y_display = pd.Series(st.session_state["y_original"])
+        else:
+            y_display = st.session_state["y_original"]
 
-        st.session_state["X_original"] = X
-        st.session_state["y_original"] = y
+        # Mostrar la vista previa de la variable objetivo
+        st.sidebar.write("Variable objetivo (y):", y_display.head())
+                # Paso 3: Eliminación de columnas
 
-        st.sidebar.success(f"Variable objetivo seleccionada: {target_variable}")
-
-        # Vista previa
-        st.sidebar.write("Características (X):", X.head())
-        st.sidebar.write("Variable objetivo (y):", y.head())
-
-    # Continuar con los pasos restantes si se selecciona una variable objetivo
     if st.session_state.get("target_variable"):
-        # Paso 3: Eliminación de columnas
         st.sidebar.subheader("Paso 3: Eliminación de Columnas")
         selected_columns = st.sidebar.multiselect(
             "Seleccione las columnas a eliminar",
@@ -931,7 +1200,13 @@ def configure_dataset():
             key="columns_to_drop_multiselect"
         )
         if st.sidebar.button("Aplicar Eliminación", key="apply_column_removal_button"):
-            st.session_state["X_original"].drop(columns=selected_columns, inplace=True)
+            if target_variable in selected_columns:
+                st.sidebar.error("La variable objetivo no puede ser eliminada.")
+                st.stop()
+            st.session_state["X_original"] = st.session_state["X_original"].drop(columns=selected_columns).copy()
+            if st.session_state["X_original"].shape[1] == 0:
+                st.sidebar.error("No quedan columnas en el dataset después de la eliminación.")
+                st.stop()
             st.session_state["columns_removed"] = True
             st.success("Columnas eliminadas con éxito.")
             st.sidebar.write("Vista previa del dataset actualizado:", st.session_state["X_original"].head())
@@ -956,67 +1231,70 @@ def configure_dataset():
                 key="categorical_null_option_selectbox"
             )
             if st.sidebar.button("Aplicar Manejo de Nulos", key="apply_null_handling_button"):
-                try:
-                    X_cleaned = handle_nulls(st.session_state["X_original"], numeric_null_option, categorical_null_option)
-                    st.session_state["X_original"] = X_cleaned
-                    st.session_state["missing_handled"] = True
-                    st.sidebar.success("Manejo de valores nulos aplicado con éxito.")
-                    st.sidebar.write("Vista previa del dataset actualizado:", X_cleaned.head())
-                except ValueError as e:
-                    st.sidebar.error(str(e))
+                X_cleaned = handle_nulls(st.session_state["X_original"], numeric_null_option, categorical_null_option)
+                st.session_state["X_original"] = X_cleaned
+                st.session_state["missing_handled"] = True
+                st.sidebar.success("Manejo de valores nulos aplicado con éxito.")
+                st.sidebar.write("Vista previa del dataset actualizado:", X_cleaned.head())
 
         # Paso 5: Codificación de variables categóricas
-        if st.session_state["missing_handled"]:
+        if st.session_state.get("missing_handled", False):
             st.sidebar.subheader("Paso 5: Codificación de Variables Categóricas")
             categorical_cols = st.session_state["X_original"].select_dtypes(include=["object", "category"]).columns
 
-            # Codificar variables categóricas en X
+            # Codificar columnas categóricas en X
             if len(categorical_cols) == 0:
                 st.sidebar.success("No existen columnas categóricas en las características (X).")
                 st.session_state["categorical_encoded"] = True
             else:
                 encoding_option = st.sidebar.selectbox(
-                    "Método de Codificación:",
+                    "Método de Codificación para características (X):",
                     ["One-Hot Encoding", "Label Encoding"],
                     key="encoding_option_selectbox"
                 )
-                if st.sidebar.button("Aplicar Codificación", key="apply_encoding_button"):
-                    try:
-                        X_encoded = encode_categorical(st.session_state["X_original"], encoding_option)
-                        st.session_state["X_original"] = X_encoded
-                        st.sidebar.success("Codificación de características aplicada con éxito.")
-                        st.sidebar.write("Vista previa del dataset actualizado (X):", X_encoded.head())
-                    except ValueError as e:
-                        st.sidebar.error(str(e))
-         # Codificar la variable objetivo (y) si es categórica y el problema es de clasificación
-        if st.session_state["problem_type"] == "Clasificación" and st.session_state["y_original"].dtype == 'object':
-            label_encoder = LabelEncoder()
-            y_encoded = label_encoder.fit_transform(st.session_state["y_original"])
-            st.session_state["y_original"] = y_encoded
-            st.session_state["label_encoder"] = label_encoder  # Guardar para decodificación
-            st.sidebar.success("La variable objetivo fue codificada exitosamente.")
-            st.sidebar.write("Vista previa de la variable objetivo codificada (y):", y_encoded[:5])
+                if st.sidebar.button("Aplicar Codificación en X", key="apply_encoding_button"):
+                    X_encoded = encode_categorical(st.session_state["X_original"], encoding_option)
+                    st.session_state["X_original"] = X_encoded
+                    st.session_state["categorical_encoded"] = True
+                    st.sidebar.success("Codificación aplicada con éxito a las características (X).")
+                    st.sidebar.write("Vista previa del dataset actualizado (X):", X_encoded.head())
 
-        # Marcar como completado
-        st.session_state["categorical_encoded"] = True
+            # Codificar la variable objetivo (y) si es categórica y el problema es de clasificación
+            if st.session_state["problem_type"] == "Clasificación" and st.session_state["y_original"].dtype == "object":
+                st.sidebar.subheader("Codificación de la Variable Objetivo (y)")
+                if st.sidebar.button("Aplicar Codificación en y", key="apply_y_encoding_button"):
+                    label_encoder = LabelEncoder()
+                    st.session_state["y_original"] = label_encoder.fit_transform(st.session_state["y_original"])
+                    st.session_state["label_encoder"] = label_encoder
+                    st.sidebar.success("Codificación aplicada con éxito a la variable objetivo (y).")
+                    st.sidebar.write("Vista previa de la variable objetivo codificada (y):", st.session_state["y_original"][:5])
 
         # Paso 6: Normalización y escalamiento
-        if st.session_state["categorical_encoded"]:
+        if st.session_state.get("categorical_encoded", False):
             st.sidebar.subheader("Paso 6: Normalización y Escalamiento")
+            numeric_columns = st.session_state["X_original"].select_dtypes(include=["float64", "int64"]).columns
             scaling_option = st.sidebar.selectbox(
                 "Método de Escalamiento:",
                 ["StandardScaler", "MinMaxScaler"],
                 key="scaling_option_selectbox"
             )
             if st.sidebar.button("Aplicar Escalamiento", key="apply_scaling_button"):
-                X = normalize_and_scale(st.session_state["X_original"], scaling_option)
-                st.session_state["X_original"] = X
+                numeric_columns = st.session_state["X_original"].select_dtypes(include=["float64", "int64"]).columns
+                scaler = StandardScaler() if scaling_option == "StandardScaler" else MinMaxScaler()
+                scaled_data = scaler.fit_transform(st.session_state["X_original"][numeric_columns])
+                st.session_state["X_original"].loc[:, numeric_columns] = scaled_data
                 st.session_state["scaling_done"] = True
                 st.sidebar.success("Escalamiento aplicado con éxito.")
-                st.sidebar.write("Vista previa del dataset actualizado:", X.head())
+                st.sidebar.write("Vista previa del dataset escalado:", st.session_state["X_original"].head())
+
+        # Validar que y_original no haya sido alterado
+        if st.session_state["problem_type"] == "Clasificación" and st.session_state["y_original"].dtype not in [np.int32, np.int64, np.float32, np.float64]:
+            st.write(st.session_state["y_original"].dtype)
+            st.sidebar.error("La variable objetivo debe seguir siendo numérica después del escalamiento. Verifica el flujo.")
+            st.stop()
 
         # Paso 7: División del dataset
-        if st.session_state["scaling_done"]:
+        if st.session_state.get("scaling_done", False):
             st.sidebar.subheader("Paso 7: División del Dataset")
             split_type = st.sidebar.selectbox(
                 "Tipo de División:",
@@ -1032,31 +1310,38 @@ def configure_dataset():
                 test_ratio = 100 - train_ratio
 
             st.sidebar.text(f"Prueba (%): {test_ratio}")
-            if st.sidebar.button("Aplicar División", key="apply_split_button"):
-                X = st.session_state["X_original"]
-                y = st.session_state["y_original"]
-
+            if st.sidebar.button("Aplicar División", key="apply_split_button") and not st.session_state.get("dataset_split", False):
                 if split_type == "Entrenamiento y Prueba":
                     X_train, X_test, y_train, y_test = train_test_split(
-                        X, y, test_size=test_ratio / 100, random_state=42
+                        st.session_state["X_original"], st.session_state["y_original"],
+                        test_size=test_ratio / 100, random_state=42
                     )
                     st.session_state["splits"] = (X_train, X_test, y_train, y_test)
                 else:
                     X_train, X_temp, y_train, y_temp = train_test_split(
-                        X, y, test_size=(val_ratio + test_ratio) / 100, random_state=42
+                        st.session_state["X_original"], st.session_state["y_original"],
+                        test_size=(val_ratio + test_ratio) / 100, random_state=42
                     )
                     X_val, X_test, y_val, y_test = train_test_split(
                         X_temp, y_temp, test_size=test_ratio / (val_ratio + test_ratio), random_state=42
                     )
                     st.session_state["splits"] = (X_train, X_val, X_test, y_train, y_val, y_test)
+                    if X_train is None or y_train is None:
+                        st.error("Los datos de entrenamiento no están configurados correctamente.")
+                        return
+
+                    if X_val is not None and (X_val.shape[0] == 0 or y_val is None):
+                            st.warning("No se encontró un conjunto de validación. Continuando sin validación.")
+                            X_val, y_val = None, None
                 st.session_state["dataset_split"] = True
                 st.sidebar.success("División del dataset realizada con éxito.")
+
+
 
     # Mensaje final
     if st.session_state.get("dataset_split", False):
         st.sidebar.header("¡Configuración Completada!")
-        st.sidebar.success("El dataset está listo. Ahora puedes proceder a configurar el modelo.")
-
+        st.sidebar.success("El dataset está listo. Ahora puedes proceder a entrenar el modelo.")
 
 
 
@@ -1421,7 +1706,25 @@ if st.session_state['training_in_progress']:
 
 # Mostrar progreso del entrenamiento
 if st.session_state['training_in_progress']:
-    train_model(st.session_state['layer_config'], st.session_state['hyperparams'], preview_placeholder, dynamic_placeholder)
+    st.write("Tipo de problema seleccionado:", st.session_state.get('problem_type'))
+    if st.session_state.get('problem_type') == "Clasificación":
+        train_model_classification(
+            st.session_state['layer_config'],
+            st.session_state['hyperparams'],
+            preview_placeholder,
+            dynamic_placeholder
+        )
+    elif st.session_state.get('problem_type') == "Regresión":
+        train_model_regression(
+            st.session_state['layer_config'],
+            st.session_state['hyperparams'],
+            preview_placeholder,
+            dynamic_placeholder
+        )
+    else:
+        st.error("El tipo de problema no está configurado correctamente.")
+        st.stop()
+
     st.session_state['training_in_progress'] = False
     st.session_state['training_finished'] = True
     st.rerun()
@@ -1434,15 +1737,124 @@ if st.session_state['training_finished']:
         "\n".join(st.session_state['logs']),
         height=300,
         key="final_logs"
-    )    
+    )
+
+    # Botón para guardar el modelo
     if st.button("Guardar Modelo"):
         st.session_state['modelDownload'].save("trained_model.h5")
         with open("trained_model.h5", "rb") as file:
             st.download_button("Descargar Modelo", file, file_name="trained_model.h5")
-    
-    # Mostrar el preview del gráfico después de finalizar
-    preview_graph(st.session_state['layer_config'], preview_placeholder)
-    
+
+    # Mostrar gráficos detallados de métricas bajo un checkbox
+    if st.checkbox("Mostrar Gráficos de Métricas finales", key="show_final_metrics"):
+        col1, col2 = st.columns(2)  # Dividir gráficos en columnas para mejor organización
+
+        # Gráfico de pérdida
+        with col1:
+            st.write("#### Pérdida por Época")
+            fig_loss = go.Figure()
+            fig_loss.add_trace(go.Scatter(
+                x=list(range(1, len(st.session_state['loss_values']) + 1)),
+                y=st.session_state['loss_values'],
+                mode='lines+markers',
+                name="Pérdida de Entrenamiento",
+                line=dict(color='blue')
+            ))
+            if st.session_state['val_loss_values']:
+                fig_loss.add_trace(go.Scatter(
+                    x=list(range(1, len(st.session_state['val_loss_values']) + 1)),
+                    y=st.session_state['val_loss_values'],
+                    mode='lines+markers',
+                    name="Pérdida de Validación",
+                    line=dict(color='red', dash='dash')
+                ))
+            fig_loss.update_layout(
+                title="Pérdida por Época",
+                xaxis_title="Época",
+                yaxis_title="Pérdida",
+                legend_title="Tipo"
+            )
+            st.plotly_chart(fig_loss, use_container_width=True)
+
+        # Gráfico de precisión
+        with col2:
+            if st.session_state['accuracy_values']:
+                st.write("#### Precisión por Época")
+                fig_acc = go.Figure()
+                fig_acc.add_trace(go.Scatter(
+                    x=list(range(1, len(st.session_state['accuracy_values']) + 1)),
+                    y=st.session_state['accuracy_values'],
+                    mode='lines+markers',
+                    name="Precisión de Entrenamiento",
+                    line=dict(color='green')
+                ))
+                if st.session_state['val_accuracy_values']:
+                    fig_acc.add_trace(go.Scatter(
+                        x=list(range(1, len(st.session_state['val_accuracy_values']) + 1)),
+                        y=st.session_state['val_accuracy_values'],
+                        mode='lines+markers',
+                        name="Precisión de Validación",
+                        line=dict(color='orange', dash='dash')
+                    ))
+                fig_acc.update_layout(
+                    title="Precisión por Época",
+                    xaxis_title="Época",
+                    yaxis_title="Precisión",
+                    legend_title="Tipo"
+                )
+                st.plotly_chart(fig_acc, use_container_width=True)
+
+        # Métricas finales según el tipo de problema
+        st.write("#### Métricas Finales")
+        if st.session_state['problem_type'] == "Clasificación":
+            # Verificar que el modelo exista
+            if "modelDownload" not in st.session_state or st.session_state["modelDownload"] is None:
+                st.error("El modelo no está entrenado. Por favor, entrena el modelo antes de intentar predecir.")
+                st.stop()
+
+            # Cargar el modelo desde session_state
+            model = st.session_state["modelDownload"]
+
+            # Datos de prueba
+            X_test = st.session_state["splits"][1]
+            y_test_original = st.session_state["splits"][3]
+
+            # Predicciones
+            y_pred = np.argmax(model.predict(X_test), axis=1)
+
+            # Calcular métricas
+            f1 = f1_score(y_test_original, y_pred, average='weighted')
+            precision = precision_score(y_test_original, y_pred, average='weighted')
+            recall = recall_score(y_test_original, y_pred, average='weighted')
+
+            # Mostrar métricas
+            st.write(f"**F1 Score:** {f1:.4f}")
+            st.write(f"**Precisión (Precision):** {precision:.4f}")
+            st.write(f"**Recall:** {recall:.4f}")
+
+            # Gráfico de métricas finales
+            fig_metrics = go.Figure()
+            fig_metrics.add_trace(go.Bar(name="F1 Score", x=["F1 Score"], y=[f1], marker_color='blue'))
+            fig_metrics.add_trace(go.Bar(name="Precisión", x=["Precisión"], y=[precision], marker_color='green'))
+            fig_metrics.add_trace(go.Bar(name="Recall", x=["Recall"], y=[recall], marker_color='orange'))
+            fig_metrics.update_layout(title="Métricas Finales", barmode="group")
+            st.plotly_chart(fig_metrics, use_container_width=True)
+
+        else:  # Para regresión
+            final_loss = st.session_state['loss_values'][-1]
+            st.write(f"**Pérdida Final (MAE):** {final_loss:.4f}")
+            if st.session_state['val_loss_values']:
+                final_val_loss = st.session_state['val_loss_values'][-1]
+                st.write(f"**Pérdida Validación Final (MAE):** {final_val_loss:.4f}")
+
+            # Gráfico de métricas finales (regresión)
+            fig_metrics = go.Figure()
+            fig_metrics.add_trace(go.Bar(name="Pérdida Final", x=["Pérdida"], y=[final_loss], marker_color='blue'))
+            if 'val_loss_values' in st.session_state and st.session_state['val_loss_values']:
+                fig_metrics.add_trace(go.Bar(name="Pérdida Validación", x=["Pérdida Validación"], y=[final_val_loss], marker_color='red'))
+            fig_metrics.update_layout(title="Pérdidas Finales", barmode="group")
+            st.plotly_chart(fig_metrics, use_container_width=True)
+
     # Botón para reiniciar el entrenamiento
     if st.button("Comenzar Entrenamiento"):
         reset_training_state()
