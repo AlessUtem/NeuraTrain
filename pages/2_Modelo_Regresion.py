@@ -15,6 +15,7 @@ from keras.layers import Dense, Dropout, Conv2D, MaxPooling2D, Flatten
 from keras.optimizers import Adam, SGD, RMSprop
 from keras.datasets import mnist, fashion_mnist, cifar10
 from keras.utils import to_categorical
+from keras.regularizers import l2
 from tensorflow.keras.preprocessing.image import ImageDataGenerator
 from sklearn.datasets import load_iris, load_breast_cancer, load_digits, load_wine, fetch_california_housing, load_diabetes
 from sklearn.model_selection import train_test_split
@@ -101,7 +102,10 @@ if 'val_accuracy_values' not in st.session_state:
     st.session_state['val_accuracy_values'] = []
 if 'problem_type' not in st.session_state:
     st.session_state['problem_type'] = "Clasificación"  # Valor predeterminado
-
+if 'y_test' not in st.session_state:
+    st.session_state['y_test'] = None
+if 'split_type' not in st.session_state:
+    st.session_state['split_type'] = "Entrenamiento y Prueba"  # Valor predeterminado1
 
 # Inyectar CSS para capturar el color de fondo
 st.markdown(
@@ -544,7 +548,7 @@ def log_event(log_placeholder, message):
 
 
 # Función para entrenar el modelo con gráficos dinámicos
-from sklearn.metrics import f1_score, precision_score, recall_score, classification_report
+from sklearn.metrics import f1_score, precision_score, recall_score, classification_report, confusion_matrix,ConfusionMatrixDisplay
 import pandas as pd
 
 def train_model(layers, hyperparams, preview_placeholder, dynamic_placeholder):
@@ -606,6 +610,11 @@ def train_model(layers, hyperparams, preview_placeholder, dynamic_placeholder):
     model = Sequential()
     for i, layer in enumerate(layers):
         if layer['type'] == "Dense":
+            # Añadir regularización L2
+            regularizer = None
+            if 'regularization' in layer and layer['regularization'] == 'l2':
+                regularizer = tf.keras.regularizers.l2(layer['regularization_rate'])
+
             model.add(Dense(
                 layer['neurons'],
                 activation=layer['activation'],
@@ -782,7 +791,7 @@ def train_model_classification(layers, hyperparams, preview_placeholder, dynamic
     dynamic_graph_placeholder = col_dynamic.empty()
     log_placeholder = st.empty()
 
-    # Validar splits
+    # Validar splits (ya existente)
     if not st.session_state.get("dataset_split", False):
         st.error("El dataset no está configurado correctamente.")
         return
@@ -797,7 +806,22 @@ def train_model_classification(layers, hyperparams, preview_placeholder, dynamic
         st.error("La división del dataset no es válida. Reconfigura el dataset.")
         return
 
-    # Preparar etiquetas
+
+
+    st.write("Validación inmediata de dimensiones después de la división:")
+    st.write(f"Dimensiones de X_train: {X_train.shape}")
+    st.write(f"Dimensiones de X_val: {X_val.shape}")
+    st.write(f"Dimensiones de X_test: {X_test.shape}")
+    st.write(f"Dimensiones de y_train: {y_train.shape}")
+    st.write(f"Dimensiones de y_val: {y_val.shape}")
+    st.write(f"Dimensiones de y_test: {y_test.shape}")
+    st.write(f"Dimensiones de y_test_original: {st.session_state["y_test_original"].shape}")
+
+    # Validar dimensiones antes del entrenamiento
+    if len(st.session_state["splits"][3]) != len(st.session_state["splits"][3]):
+        st.error("Dimensiones inconsistentes entre X_test y y_test_original antes del entrenamiento.")
+        st.stop()
+
     num_classes = len(np.unique(y_train))
     y_train = to_categorical(y_train, num_classes)
     if y_val is not None:
@@ -805,16 +829,25 @@ def train_model_classification(layers, hyperparams, preview_placeholder, dynamic
     y_test_original = y_test
     y_test = to_categorical(y_test, num_classes)
 
+    if X_test.isnull().values.any():
+        st.error("X_test contiene valores NaN. Revisa el preprocesamiento.")
+        st.stop()
+    if X_test.shape[1] != 4:
+        st.error(f"X_test tiene {X_test.shape[1]} columnas, pero el modelo espera 4 características.")
+        st.stop()
+
+
+
     # Crear modelo
     input_shape = (X_train.shape[1],)
     model = Sequential()
     for i, layer in enumerate(layers):
         if layer['type'] == "Dense":
-            model.add(Dense(layer['neurons'], activation=layer['activation'], input_shape=input_shape if i == 0 else None))
+            model.add(Dense(layer['neurons'], activation=layer['activation'], input_shape=input_shape if i == 0 else None,kernel_regularizer=l2(layer['l2']) if layer.get('enable_l2', False) else None))
         elif layer['type'] == "Dropout":
             model.add(Dropout(layer['dropout_rate']))
-    model.add(Dense(num_classes, activation="softmax"))
 
+    st.write(f"Configuración de capas utilizada: {st.session_state['layer_config']}")
     # Configurar optimizador y compilar modelo
     optimizer = Adam(learning_rate=hyperparams['learning_rate'])
     model.compile(optimizer=optimizer, loss="categorical_crossentropy", metrics=["accuracy"])
@@ -856,9 +889,14 @@ def train_model_classification(layers, hyperparams, preview_placeholder, dynamic
         )
 
     # Métricas finales
-    y_pred = np.argmax(model.predict(X_test), axis=1)
-    f1 = f1_score(y_test_original, y_pred, average='weighted')
-    st.write(f"F1 Score (weighted): {f1:.4f}")
+    st.write(f"Dimensiones de X_test: {X_test.shape}")
+    st.write(f"Dimensiones de y_test_original: {y_test_original.shape}")
+
+
+    if np.isnan(X_test.values).any():
+        st.error("X_test contiene valores NaN. Revisa el preprocesamiento.")
+        st.stop()
+
     st.session_state["modelDownload"] = model
     st.success("Entrenamiento finalizado con éxito.")
 
@@ -897,7 +935,7 @@ def train_model_regression(layers, hyperparams, preview_placeholder, dynamic_pla
     model = Sequential()
     for i, layer in enumerate(layers):
         if layer['type'] == "Dense":
-            model.add(Dense(layer['neurons'], activation=layer['activation'], input_shape=input_shape if i == 0 else None))
+            model.add(Dense(layer['neurons'], activation=layer['activation'], input_shape=input_shape if i == 0 else None,kernel_regularizer=l2(layer['l2']) if layer.get('enable_l2', False) else None))
         elif layer['type'] == "Dropout":
             model.add(Dropout(layer['dropout_rate']))
     model.add(Dense(1, activation="linear"))
@@ -990,50 +1028,50 @@ def update_layer_config():
 architectures = {
     "Iris": {
         "Simple MLP": [
-            {"name": "Dense1", "type": "Dense", "neurons": 32, "activation": "relu", "base": True},
-            {"name": "Dense2", "type": "Dense", "neurons": 16, "activation": "relu", "base": True},
-            {"name": "Dense3", "type": "Dense", "neurons": 3, "activation": "softmax", "base": True}
+            {"name": "Dense1", "type": "Dense", "neurons": 32, "activation": "relu", "base": True, "l2": 0.01, "enable_l2": True},
+            {"name": "Dense2", "type": "Dense", "neurons": 16, "activation": "relu", "base": True, "l2": 0.01, "enable_l2": True},
+            {"name": "Dense3", "type": "Dense", "neurons": 3, "activation": "softmax", "base": True, "l2": 0.0, "enable_l2": False}
         ],
         "Deep MLP": [
-            {"name": "Dense1", "type": "Dense", "neurons": 64, "activation": "relu", "base": True},
-            {"name": "Dense2", "type": "Dense", "neurons": 32, "activation": "relu", "base": True},
-            {"name": "Dense3", "type": "Dense", "neurons": 16, "activation": "relu", "base": True},
-            {"name": "Dense4", "type": "Dense", "neurons": 3, "activation": "softmax", "base": True}
+            {"name": "Dense1", "type": "Dense", "neurons": 64, "activation": "relu", "base": True, "l2": 0.01, "enable_l2": True},
+            {"name": "Dense2", "type": "Dense", "neurons": 32, "activation": "relu", "base": True, "l2": 0.01, "enable_l2": True},
+            {"name": "Dense3", "type": "Dense", "neurons": 16, "activation": "relu", "base": True, "l2": 0.01, "enable_l2": True},
+            {"name": "Dense4", "type": "Dense", "neurons": 3, "activation": "softmax", "base": True, "l2": 0.0, "enable_l2": False}
         ]
     },
     "Wine": {
         "Simple MLP": [
-            {"name": "Dense1", "type": "Dense", "neurons": 64, "activation": "relu", "base": True},
-            {"name": "Dense2", "type": "Dense", "neurons": 32, "activation": "relu", "base": True},
-            {"name": "Dense3", "type": "Dense", "neurons": 3, "activation": "softmax", "base": True}
+            {"name": "Dense1", "type": "Dense", "neurons": 64, "activation": "relu", "base": True, "l2": 0.01, "enable_l2": True},
+            {"name": "Dense2", "type": "Dense", "neurons": 32, "activation": "relu", "base": True, "l2": 0.01, "enable_l2": True},
+            {"name": "Dense3", "type": "Dense", "neurons": 3, "activation": "softmax", "base": True, "l2": 0.0, "enable_l2": False}
         ]
     },
     "Breast Cancer": {
         "Simple MLP": [
-            {"name": "Dense1", "type": "Dense", "neurons": 32, "activation": "relu", "base": True},
-            {"name": "Dense2", "type": "Dense", "neurons": 16, "activation": "relu", "base": True},
-            {"name": "Dense3", "type": "Dense", "neurons": 2, "activation": "softmax", "base": True}
+            {"name": "Dense1", "type": "Dense", "neurons": 32, "activation": "relu", "base": True, "l2": 0.01, "enable_l2": True},
+            {"name": "Dense2", "type": "Dense", "neurons": 16, "activation": "relu", "base": True, "l2": 0.01, "enable_l2": True},
+            {"name": "Dense3", "type": "Dense", "neurons": 2, "activation": "softmax", "base": True, "l2": 0.0, "enable_l2": False}
         ]
     },
     "Digits": {
         "Simple MLP": [
-            {"name": "Dense1", "type": "Dense", "neurons": 64, "activation": "relu", "base": True},
-            {"name": "Dense2", "type": "Dense", "neurons": 32, "activation": "relu", "base": True},
-            {"name": "Dense3", "type": "Dense", "neurons": 10, "activation": "softmax", "base": True}
+            {"name": "Dense1", "type": "Dense", "neurons": 64, "activation": "relu", "base": True, "l2": 0.01, "enable_l2": True},
+            {"name": "Dense2", "type": "Dense", "neurons": 32, "activation": "relu", "base": True, "l2": 0.01, "enable_l2": True},
+            {"name": "Dense3", "type": "Dense", "neurons": 10, "activation": "softmax", "base": True, "l2": 0.0, "enable_l2": False}
         ]
     },
     "Boston Housing": {
         "Simple Regression": [
-            {"name": "Dense1", "type": "Dense", "neurons": 64, "activation": "relu", "base": True},
-            {"name": "Dense2", "type": "Dense", "neurons": 32, "activation": "relu", "base": True},
-            {"name": "Output", "type": "Dense", "neurons": 1, "activation": "linear", "base": True}
+            {"name": "Dense1", "type": "Dense", "neurons": 64, "activation": "relu", "base": True, "l2": 0.01, "enable_l2": True},
+            {"name": "Dense2", "type": "Dense", "neurons": 32, "activation": "relu", "base": True, "l2": 0.01, "enable_l2": True},
+            {"name": "Output", "type": "Dense", "neurons": 1, "activation": "linear", "base": True, "l2": 0.0, "enable_l2": False}
         ]
     },
     "Diabetes": {
         "Simple Regression": [
-            {"name": "Dense1", "type": "Dense", "neurons": 64, "activation": "relu", "base": True},
-            {"name": "Dense2", "type": "Dense", "neurons": 32, "activation": "relu", "base": True},
-            {"name": "Output", "type": "Dense", "neurons": 1, "activation": "linear", "base": True}
+            {"name": "Dense1", "type": "Dense", "neurons": 64, "activation": "relu", "base": True, "l2": 0.01, "enable_l2": True},
+            {"name": "Dense2", "type": "Dense", "neurons": 32, "activation": "relu", "base": True, "l2": 0.01, "enable_l2": True},
+            {"name": "Output", "type": "Dense", "neurons": 1, "activation": "linear", "base": True, "l2": 0.0, "enable_l2": False}
         ]
     }
 }
@@ -1296,12 +1334,16 @@ def configure_dataset():
         # Paso 7: División del dataset
         if st.session_state.get("scaling_done", False):
             st.sidebar.subheader("Paso 7: División del Dataset")
+            
             split_type = st.sidebar.selectbox(
                 "Tipo de División:",
                 ["Entrenamiento y Prueba", "Entrenamiento, Validación y Prueba"],
                 key="split_type_selectbox"
             )
+            st.session_state["split_type"] = split_type
             train_ratio = st.sidebar.slider("Entrenamiento (%)", 10, 90, 70, key="train_ratio_slider")
+
+            # Calcular proporciones para validación y prueba
             if split_type == "Entrenamiento, Validación y Prueba":
                 val_ratio = st.sidebar.slider("Validación (%)", 5, 50, 15, key="val_ratio_slider")
                 test_ratio = 100 - train_ratio - val_ratio
@@ -1310,32 +1352,57 @@ def configure_dataset():
                 test_ratio = 100 - train_ratio
 
             st.sidebar.text(f"Prueba (%): {test_ratio}")
+            
+            # Botón para aplicar división
             if st.sidebar.button("Aplicar División", key="apply_split_button") and not st.session_state.get("dataset_split", False):
                 if split_type == "Entrenamiento y Prueba":
+                    # División simple: Entrenamiento y Prueba
                     X_train, X_test, y_train, y_test = train_test_split(
                         st.session_state["X_original"], st.session_state["y_original"],
                         test_size=test_ratio / 100, random_state=42
                     )
+                    # Guardar y_test_original antes de cualquier transformación
+                    st.session_state['y_test_original'] = y_test.copy()
                     st.session_state["splits"] = (X_train, X_test, y_train, y_test)
-                else:
+
+                elif split_type == "Entrenamiento, Validación y Prueba":
+                    # División avanzada: Entrenamiento, Validación y Prueba
                     X_train, X_temp, y_train, y_temp = train_test_split(
                         st.session_state["X_original"], st.session_state["y_original"],
                         test_size=(val_ratio + test_ratio) / 100, random_state=42
                     )
+                    val_ratio_adjusted = val_ratio / (val_ratio + test_ratio)
                     X_val, X_test, y_val, y_test = train_test_split(
-                        X_temp, y_temp, test_size=test_ratio / (val_ratio + test_ratio), random_state=42
+                        X_temp, y_temp, test_size=1 - val_ratio_adjusted, random_state=42
                     )
-                    st.session_state["splits"] = (X_train, X_val, X_test, y_train, y_val, y_test)
-                    if X_train is None or y_train is None:
-                        st.error("Los datos de entrenamiento no están configurados correctamente.")
-                        return
+                    # Después de la división
 
-                    if X_val is not None and (X_val.shape[0] == 0 or y_val is None):
-                            st.warning("No se encontró un conjunto de validación. Continuando sin validación.")
-                            X_val, y_val = None, None
+                    st.session_state['y_test_original'] = y_test.copy()
+                    
+                    st.session_state["splits"] = (X_train, X_val, X_test, y_train, y_val, y_test)
+                    # Verificar dimensiones después de la división
+                    if len(X_test) != len(y_test):
+                        st.error("Dimensiones inconsistentes entre X_test y y_test después de la división.")
+
+
+
+                # Verificación de dimensiones
+                splits = st.session_state["splits"]
+                
+                if len(splits) == 4:
+                    X_train, X_test, y_train, y_test = splits
+                elif len(splits) == 6:
+                    X_train, X_val, X_test, y_train, y_val, y_test = splits
+
+                if len(X_test) != len(y_test):
+                    st.error("Dimensiones inconsistentes entre X_test y y_test después de la división.")
+                    st.stop()
+
+                # Guardar copia de y_test_original para referencia
+                st.session_state["y_test_original"] = y_test.copy()
+
                 st.session_state["dataset_split"] = True
                 st.sidebar.success("División del dataset realizada con éxito.")
-
 
 
     # Mensaje final
@@ -1544,6 +1611,24 @@ elif tabs == "Capas":
                     key=f"activation_{i}",
                     help="Función de activación para la capa densa."
                 )
+                # Checkbox para habilitar regularización L2
+                layer['enable_l2'] = st.checkbox(
+                    "Habilitar Regularización L2",
+                    value=layer.get('enable_l2', False),
+                    key=f"enable_l2_{i}",
+                    help="Activa la regularización L2 para esta capa."
+                )
+                if layer['enable_l2']:
+                    # Slider para definir el coeficiente L2 si está habilitado
+                    layer['l2'] = st.slider(
+                        "Regularización L2",
+                        min_value=0.0,
+                        max_value=0.1,
+                        value=layer.get('l2', 0.01),
+                        step=0.01,
+                        key=f"l2_{i}",
+                        help="Coeficiente de regularización L2 para los pesos de la capa densa."
+                    )
             elif layer['type'] == "Dropout":
                 layer['dropout_rate'] = st.slider(
                     "Tasa de Dropout",
@@ -1816,29 +1901,49 @@ if st.session_state['training_finished']:
             model = st.session_state["modelDownload"]
 
             # Datos de prueba
-            X_test = st.session_state["splits"][1]
-            y_test_original = st.session_state["splits"][3]
+            split_type = st.session_state["split_type"]
 
-            # Predicciones
-            y_pred = np.argmax(model.predict(X_test), axis=1)
+            if split_type == "Entrenamiento y Prueba":
+                X_test = st.session_state["splits"][1]
+                y_test_original = st.session_state["splits"][3]
+            elif split_type == "Entrenamiento, Validación y Prueba":
+                X_test = st.session_state["splits"][2]
+                y_test_original = st.session_state["splits"][5]
+            else:
+                st.error("Tipo de división desconocido. Revisa la configuración.")
+                st.stop()
+
+            # Predicción
+            predictions = model.predict(X_test)
+            y_pred = np.argmax(predictions, axis=1)
+
+            # Validar dimensiones después de predecir
+            if len(y_pred) != len(y_test_original):
+                st.error(f"Dimensiones inconsistentes: y_pred tiene {len(y_pred)} muestras, pero y_test_original tiene {len(y_test_original)}.")
+                st.stop()
 
             # Calcular métricas
             f1 = f1_score(y_test_original, y_pred, average='weighted')
             precision = precision_score(y_test_original, y_pred, average='weighted')
             recall = recall_score(y_test_original, y_pred, average='weighted')
 
+            # Visualización de la matriz de confusión
+            cm = confusion_matrix(y_test_original, y_pred)
+            st.write("Matriz de confusión:")
+            fig, ax = plt.subplots()
+            disp = ConfusionMatrixDisplay(confusion_matrix=cm)
+            disp.plot(ax=ax)
+            st.pyplot(fig)
+
+            # Comparar predicciones con etiquetas reales
+            st.write("Comparación de predicciones individuales:")
+            for i in range(min(5, len(y_test_original))):  # Mostrar máximo 5 ejemplos
+                st.write(f"Ejemplo {i+1}: Real: {y_test_original[i]}, Predicción: {y_pred[i]}")
+
             # Mostrar métricas
             st.write(f"**F1 Score:** {f1:.4f}")
             st.write(f"**Precisión (Precision):** {precision:.4f}")
             st.write(f"**Recall:** {recall:.4f}")
-
-            # Gráfico de métricas finales
-            fig_metrics = go.Figure()
-            fig_metrics.add_trace(go.Bar(name="F1 Score", x=["F1 Score"], y=[f1], marker_color='blue'))
-            fig_metrics.add_trace(go.Bar(name="Precisión", x=["Precisión"], y=[precision], marker_color='green'))
-            fig_metrics.add_trace(go.Bar(name="Recall", x=["Recall"], y=[recall], marker_color='orange'))
-            fig_metrics.update_layout(title="Métricas Finales", barmode="group")
-            st.plotly_chart(fig_metrics, use_container_width=True)
 
         else:  # Para regresión
             final_loss = st.session_state['loss_values'][-1]
