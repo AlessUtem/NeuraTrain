@@ -832,9 +832,6 @@ def train_model_classification(layers, hyperparams, preview_placeholder, dynamic
     if X_test.isnull().values.any():
         st.error("X_test contiene valores NaN. Revisa el preprocesamiento.")
         st.stop()
-    if X_test.shape[1] != 4:
-        st.error(f"X_test tiene {X_test.shape[1]} columnas, pero el modelo espera 4 características.")
-        st.stop()
 
 
 
