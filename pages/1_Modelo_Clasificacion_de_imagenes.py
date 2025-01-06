@@ -6,15 +6,20 @@ import plotly.graph_objects as go
 import math
 import numpy as np
 import time
+import cv2
+from PIL import Image
+
 
 from threading import Thread
 from matplotlib.animation import FuncAnimation
 from keras.models import Sequential
+from keras.callbacks import EarlyStopping
 from keras.layers import Dense, Dropout, Conv2D, MaxPooling2D, Flatten
 from keras.optimizers import Adam, SGD, RMSprop
 from keras.datasets import mnist, fashion_mnist, cifar10
 from keras.utils import to_categorical
 from tensorflow.keras.preprocessing.image import ImageDataGenerator
+from sklearn.metrics import f1_score, precision_score, recall_score, classification_report, confusion_matrix,ConfusionMatrixDisplay
 
 # Config
 
@@ -67,6 +72,18 @@ if 'test_ratio' not in st.session_state:
     st.session_state['test_ratio'] = 10  # Valor predeterminado para la prueba
 if 'shuffle_data' not in st.session_state:
     st.session_state['shuffle_data'] = True  # Valor predeterminado para aleatorizar datos
+if 'x_train' not in st.session_state:
+    st.session_state['x_train'] = None
+if 'y_train' not in st.session_state:
+    st.session_state['y_train'] = None
+if 'x_val' not in st.session_state:
+    st.session_state['x_val'] = None
+if 'y_val' not in st.session_state:
+    st.session_state['y_val'] = None
+if 'x_test' not in st.session_state:
+    st.session_state['x_test'] = None
+if 'y_test' not in st.session_state:
+    st.session_state['y_test'] = None
 
 
 
@@ -536,6 +553,9 @@ def train_model(layers, hyperparams, preview_placeholder, dynamic_placeholder):
 
 
 
+
+
+
     # Configuración de Data Augmentation (si está activado)
     if st.session_state['selected_dataset'] == 'CIFAR-10' and st.session_state.get('data_augmentation', False):
         datagen = ImageDataGenerator(
@@ -547,6 +567,14 @@ def train_model(layers, hyperparams, preview_placeholder, dynamic_placeholder):
         datagen.fit(x_train)  # Ajustar el generador al conjunto de entrenamiento
     else:
         datagen = None  # No usar data augmentation si no está activado
+
+
+    st.session_state['x_train'] = x_train
+    st.session_state['y_train'] = y_train
+    st.session_state['x_val'] = x_val
+    st.session_state['y_val'] = y_val
+    st.session_state['x_test'] = x_test
+    st.session_state['y_test'] = y_test
 
     optimizers = {
         "Adam": Adam(learning_rate=hyperparams['learning_rate']),
@@ -632,6 +660,8 @@ def train_model(layers, hyperparams, preview_placeholder, dynamic_placeholder):
     # Inicializar listas para almacenar las métricas
     loss_values = []
     accuracy_values = []
+    val_loss_values = []
+    val_accuracy_values = []
 
     for epoch in range(epochs):
         
@@ -677,11 +707,23 @@ def train_model(layers, hyperparams, preview_placeholder, dynamic_placeholder):
 
 
         
-        # Almacenar las métricas
         loss = history.history['loss'][0]
         accuracy = history.history['accuracy'][0]
+        val_loss = history.history['val_loss'][0]
+        val_accuracy = history.history['val_accuracy'][0]
+
         loss_values.append(loss)
         accuracy_values.append(accuracy)
+
+        # También almacenar las métricas de validación
+        val_loss_values.append(val_loss)
+        val_accuracy_values.append(val_accuracy)
+
+        # Guardar todas las métricas en el estado de sesión
+        st.session_state['loss_values'] = loss_values
+        st.session_state['accuracy_values'] = accuracy_values
+        st.session_state['val_loss_values'] = val_loss_values
+        st.session_state['val_accuracy_values'] = val_accuracy_values
 
         # Actualizar gráficos de métricas
         if st.session_state['show_metrics']: 
@@ -938,15 +980,6 @@ if tabs == "Dataset":
                 help="Permite voltear horizontalmente las imágenes de forma aleatoria."
             )
 
-    # Tamaño de batch
-    st.session_state['batch_size'] = st.sidebar.number_input(
-        "Tamaño de Batch",
-        min_value=8,
-        max_value=256,
-        value=st.session_state.get('batch_size', 32),
-        step=8,
-        help="Tamaño de los lotes que se utilizarán durante el entrenamiento."
-    )
 
     # Mostrar ejemplos del dataset
     x_train, y_train, x_val, y_val, x_test, y_test, input_shape, num_classes = load_dataset(
@@ -1295,12 +1328,17 @@ elif tabs == "Early Stopping":
             index=0,
             help="Métrica que se monitoreará para decidir si detener el entrenamiento."
         )
+        st.session_state['hyperparams']['enable_early_stopping'] = True
+        st.session_state['hyperparams']['monitor_metric'] = monitor_metric
+        st.session_state['hyperparams']['patience'] = patience
+    else:
+        st.session_state['hyperparams']['enable_early_stopping'] = False
 
 
 
 # Checkbox para mostrar/ocultar métricas (siempre disponible)
 st.session_state['show_metrics'] = st.checkbox(
-    "Mostrar Gráficos de Métricas",
+    "Mostrar Gráficos de Métricas en tiempo de entrenamiento",
     value=st.session_state.get('show_metrics', False),
     disabled=st.session_state['training_in_progress']  # Deshabilitar si está entrenando
 )
@@ -1366,3 +1404,294 @@ if st.session_state['training_finished']:
     if st.button("Comenzar Entrenamiento"):
         reset_training_state()
         st.rerun()
+
+
+if st.session_state['training_finished'] and st.session_state["modelDownload"]:
+    if st.checkbox("Habilitar métricas finales", value=True, key="final_metrics"):
+        st.subheader("📊 Métricas de Entrenamiento y Validación")
+        with st.expander("¿Qué significa este gráfico?"):
+            st.write("Este gráfico muestra cómo la pérdida (error) cambia en cada época. Una tendencia descendente indica que el modelo está aprendiendo y ajustándose mejor a los datos.")
+        # Gráfico de pérdida
+        fig_loss = go.Figure()
+        fig_loss.add_trace(go.Scatter(
+            x=list(range(1, len(st.session_state['loss_values']) + 1)),
+            y=st.session_state['loss_values'],
+            mode='lines+markers',
+            name="Pérdida de Entrenamiento",
+            line=dict(color='blue')
+        ))
+        fig_loss.add_trace(go.Scatter(
+            x=list(range(1, len(st.session_state['val_loss_values']) + 1)),
+            y=st.session_state['val_loss_values'],
+            mode='lines+markers',
+            name="Pérdida de Validación",
+            line=dict(color='red', dash='dash')
+        ))
+        fig_loss.update_layout(
+            title="Pérdida por Época",
+            xaxis_title="Época",
+            yaxis_title="Pérdida",
+            legend_title="Tipo"
+        )
+        st.plotly_chart(fig_loss, use_container_width=True)
+
+        # Gráfico de precisión
+        with st.expander("¿Qué significa este gráfico?"):
+            st.write("Este gráfico muestra cómo la precisión del modelo cambia en cada época. Una tendencia ascendente indica que el modelo está mejorando en sus predicciones.")        
+        fig_accuracy = go.Figure()
+        fig_accuracy.add_trace(go.Scatter(
+            x=list(range(1, len(st.session_state['accuracy_values']) + 1)),
+            y=st.session_state['accuracy_values'],
+            mode='lines+markers',
+            name="Precisión de Entrenamiento",
+            line=dict(color='green')
+        ))
+        fig_accuracy.add_trace(go.Scatter(
+            x=list(range(1, len(st.session_state['val_accuracy_values']) + 1)),
+            y=st.session_state['val_accuracy_values'],
+            mode='lines+markers',
+            name="Precisión de Validación",
+            line=dict(color='orange', dash='dash')
+        ))
+        fig_accuracy.update_layout(
+            title="Precisión por Época",
+            xaxis_title="Época",
+            yaxis_title="Precisión",
+            legend_title="Tipo"
+        )
+        st.plotly_chart(fig_accuracy, use_container_width=True)
+        
+        model = st.session_state['modelDownload']
+        x_test = st.session_state['x_test']
+        y_test = st.session_state['y_test'] 
+
+        # Generar predicciones en el conjunto de prueba
+        y_pred = model.predict(x_test)
+        y_pred_classes = np.argmax(y_pred, axis=1)
+        y_true_classes = np.argmax(y_test, axis=1)
+
+        # Calcular matriz de confusión
+        cm = confusion_matrix(y_true_classes, y_pred_classes)
+        st.session_state['confusion_matrix'] = cm
+
+        # Visualizar matriz de confusión
+        st.subheader("🔍 Matriz de Confusión")
+        with st.expander("¿Qué significa esta matriz?"):
+            st.write("""
+            Una matriz de confusión compara las predicciones del modelo con los valores reales. Cada celda representa:
+            
+            - **Fila**: La clase real.
+            - **Columna**: La clase predicha.
+            
+            Interpretación:
+            - **Diagonal principal**: Cantidad de predicciones correctas.
+            - **Fuera de la diagonal**: Errores de predicción (predicciones incorrectas).
+            
+            Por ejemplo:
+            - Un valor alto en la diagonal principal indica que el modelo predijo correctamente para esa clase.
+            - Un valor alto fuera de la diagonal indica errores específicos entre dos clases.
+            """)
+        fig, ax = plt.subplots(figsize=(6, 6))
+        disp = ConfusionMatrixDisplay(confusion_matrix=cm)
+        disp.plot(ax=ax)
+        st.pyplot(fig)
+
+        # Calcular métricas de clasificación
+        f1_score = f1_score(y_true_classes, y_pred_classes, average='weighted')
+        precision_score = precision_score(y_true_classes, y_pred_classes, average='weighted')
+        recall_score = recall_score(y_true_classes, y_pred_classes, average='weighted')
+
+
+        st.text_input(
+            "**F1 Score:**",
+            f"{f1_score:.4f}",
+            help="El F1 Score es una medida de equilibrio entre precisión y recall, especialmente útil en datasets desbalanceados. Valores cercanos a 1 indican un buen rendimiento."
+        )
+        st.text_input(
+            "**Precisión (Precision):**",
+            f"{precision_score:.4f}",
+            help="La precisión indica qué proporción de las predicciones positivas es correcta. Es clave en problemas donde los falsos positivos son costosos."
+        )
+        st.text_input(
+            "**Recall:**",
+            f"{recall_score:.4f}",
+            help="El recall indica qué proporción de los casos positivos reales fue correctamente identificada. Es clave cuando los falsos negativos son costosos."
+        )
+
+
+
+if st.session_state["training_finished"] and st.session_state["modelDownload"]:
+    import json
+    import pandas as pd
+    import numpy as np
+
+    # Función para convertir objetos no serializables a JSON
+    def serialize_object(obj):
+        if isinstance(obj, pd.DataFrame):
+            return obj.to_dict(orient="list")  # Convertir DataFrame a diccionario
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()  # Convertir ndarray a lista
+        elif isinstance(obj, list):
+            return [serialize_object(item) for item in obj]  # Procesar listas recursivamente
+        elif isinstance(obj, dict):
+            return {key: serialize_object(value) for key, value in obj.items()}  # Procesar diccionarios recursivamente
+        return obj  # Devolver el objeto original si es compatible
+
+    # Botón para exportar configuración
+    if st.button("Exportar Configuración del Modelo"):
+        # Determinar tipo de división
+        # Recopilar métricas según el tipo de problema
+        problem_type = st.session_state.get("problem_type", "Clasificación")
+        metrics = {
+            "Clasificación": {
+                "loss_values": st.session_state.get("loss_values"),
+                "accuracy_values": st.session_state.get("accuracy_values"),
+                "val_loss_values": st.session_state.get("val_loss_values"),
+                "val_accuracy_values": st.session_state.get("val_accuracy_values"),
+                "confusion_matrix": st.session_state.get("confusion_matrix"),
+                "f1_score": st.session_state.get("f1_score"),
+                "precision": st.session_state.get("precision_score"),
+                "recall": st.session_state.get("recall_score"),
+            },
+            "Regresión": {
+                "loss_values": st.session_state.get("loss_values"),
+                "mae_values": st.session_state.get("mae_values"),
+                "val_loss_values": st.session_state.get("val_loss_values"),
+                "val_mae_values": st.session_state.get("val_mae_values"),
+                "mse": st.session_state.get("mse"),
+                "rmse": st.session_state.get("rmse"),
+            }
+        }.get(problem_type, {})
+
+        # Recopilar datos relevantes
+        config_data = {
+            "dataset": {
+                "selected_dataset": st.session_state.get("selected_dataset"),
+                "train_ratio": st.session_state.get("train_ratio"),
+                "val_ratio": st.session_state.get("val_ratio"),
+                "test_ratio": st.session_state.get("test_ratio"),
+                "shuffle_data": st.session_state.get("shuffle_data"),
+                "normalize_data": st.session_state.get("normalize_data"),
+                "data_augmentation": st.session_state.get("data_augmentation"),
+            },
+            "layer_config": st.session_state.get("layer_config"),
+            "hyperparams": st.session_state.get("hyperparams"),
+            "metrics": serialize_object(metrics),
+        }
+
+        # Serializar el objeto de configuración
+        serialized_data = serialize_object(config_data)
+
+        # Convertir a JSON y mostrar
+        config_json = json.dumps(serialized_data, indent=4)
+        st.json(json.loads(config_json))  # Mostrar configuración en la app
+
+        serialized_data = serialize_object(config_data)
+        st.session_state['serialized_results'] = serialized_data
+        # Descargar archivo JSON
+        st.download_button(
+            label="Descargar Configuración como JSON",
+            data=config_json,
+            file_name="model_config.json",
+            mime="application/json"
+        )
+
+
+if st.session_state["training_finished"] and st.session_state["modelDownload"]:
+    from streamlit_drawable_canvas import st_canvas
+
+    # Sección de pruebas
+    st.header("🎨 Probar el Modelo")
+    if st.checkbox("Habilitar Prueba del modelo", value=True, key="test_model"):
+        selected_dataset = st.session_state['selected_dataset']
+
+        if selected_dataset == "MNIST":
+            st.subheader("Dibuja un Número (MNIST)")
+            canvas_result = st_canvas(
+                fill_color="rgba(255, 165, 0, 0.3)",  # Color de fondo
+                stroke_width=10,  # Ancho del trazo
+                stroke_color="black",  # Color del trazo
+                background_color="white",  # Color de fondo del canvas
+                width=150,  # Ancho del canvas
+                height=150,  # Altura del canvas
+                drawing_mode="freedraw",  # Modo de dibujo
+                key="canvas",
+            )
+
+            if st.button("Predecir Número"):
+                if canvas_result.image_data is not None:
+                    # Procesar la imagen dibujada
+                    img = canvas_result.image_data[:, :, 0]  # Extraer canal de intensidad
+                    img_resized = cv2.resize(img, (28, 28))  # Redimensionar al tamaño MNIST
+                    img_resized = img_resized.astype("float32") / 255.0  # Normalizar
+                    img_resized = img_resized.reshape(1, 28, 28, 1)  # Cambiar forma para el modelo
+                    img_resized = 1.0 - img_resized  # Invertir valores
+
+                    # Mostrar la imagen procesada para depuración
+                    st.image(img_resized.squeeze(), caption="Imagen Procesada", width=150)
+
+                    # Realizar predicción
+                    model = st.session_state['modelDownload']
+                    pred = model.predict(img_resized)
+                    pred_class = np.argmax(pred)
+                    confidence = np.max(pred) * 100
+
+                    st.success(f"Predicción: {pred_class} (Confianza: {confidence:.2f}%)")
+
+        elif selected_dataset == "Fashion MNIST":
+            st.subheader("Sube una Imagen (Fashion MNIST)")
+            uploaded_file = st.file_uploader("Sube una imagen (28x28 en escala de grises)", type=["png", "jpg", "jpeg"])
+
+            if uploaded_file:
+                img = Image.open(uploaded_file).convert("L")  # Convertir a escala de grises
+                img_resized = img.resize((28, 28))  # Redimensionar al tamaño de entrada esperado
+                img_array = np.array(img_resized).astype("float32")  # Convertir a array NumPy
+
+                # Normalizar los valores entre 0 y 1
+                img_array = img_array / 255.0
+
+                # Invertir los valores para asegurarte de que el fondo sea negro y el contenido sea blanco
+                img_array = 1.0 - img_array
+
+                # Cambiar la forma para que sea compatible con el modelo
+                img_array = img_array.reshape(1, 28, 28, 1)
+
+                # Mostrar la imagen procesada
+                st.image(img_array.squeeze(), caption="Imagen Procesada (Fondo Negro, Contenido Blanco)", width=150)
+
+
+                if st.button("Predecir Categoría"):
+                    # Realizar predicción
+                    model = st.session_state['modelDownload']
+                    pred = model.predict(img_array)
+                    pred_class = np.argmax(pred)
+                    confidence = np.max(pred) * 100
+                    class_names = [
+                        "T-shirt/top", "Trouser", "Pullover", "Dress", "Coat",
+                        "Sandal", "Shirt", "Sneaker", "Bag", "Ankle boot"
+                    ]
+
+                    st.success(f"Predicción: {class_names[pred_class]} (Confianza: {confidence:.2f}%)")
+
+        elif selected_dataset == "CIFAR-10":
+            st.subheader("Sube una Imagen (CIFAR-10)")
+            uploaded_file = st.file_uploader("Sube una imagen (32x32 en color)", type=["png", "jpg", "jpeg"])
+
+            if uploaded_file:
+                img = Image.open(uploaded_file).convert("RGB")  # Convertir a RGB
+                img_resized = img.resize((32, 32))  # Redimensionar
+                img_array = np.array(img_resized).astype("float32") / 255.0  # Normalizar
+                img_array = img_array.reshape(1, 32, 32, 3)  # Cambiar forma para el modelo
+
+                if st.button("Predecir Categoría"):
+                    # Realizar predicción
+                    model = st.session_state['modelDownload']
+                    pred = model.predict(img_array)
+                    pred_class = np.argmax(pred)
+                    confidence = np.max(pred) * 100
+                    class_names = [
+                        "Airplane", "Automobile", "Bird", "Cat", "Deer",
+                        "Dog", "Frog", "Horse", "Ship", "Truck"
+                    ]
+
+                    st.success(f"Predicción: {class_names[pred_class]} (Confianza: {confidence:.2f}%)")

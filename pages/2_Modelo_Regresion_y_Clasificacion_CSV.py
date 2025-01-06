@@ -11,13 +11,11 @@ import pandas as pd
 from threading import Thread
 from matplotlib.animation import FuncAnimation
 from keras.models import Sequential
-from keras.layers import Dense, Dropout, Conv2D, MaxPooling2D, Flatten
+from keras.layers import Dense, Dropout
 from keras.optimizers import Adam, SGD, RMSprop
 from keras.callbacks import EarlyStopping
-from keras.datasets import mnist, fashion_mnist, cifar10
 from keras.utils import to_categorical
 from keras.regularizers import l2
-from tensorflow.keras.preprocessing.image import ImageDataGenerator
 from sklearn.datasets import load_iris, load_breast_cancer, load_digits, load_wine, fetch_california_housing, load_diabetes
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler, MinMaxScaler, LabelEncoder
@@ -676,7 +674,6 @@ def train_model_classification(layers, hyperparams, preview_placeholder, dynamic
         elif layer['type'] == "Dropout":
             model.add(Dropout(layer['dropout_rate']))
 
-    st.write(f"Configuración de capas utilizada: {st.session_state['layer_config']}")
     # Configurar optimizador y compilar modelo
     optimizer = Adam(learning_rate=hyperparams['learning_rate'])
     model.compile(optimizer=optimizer, loss="categorical_crossentropy", metrics=["accuracy"])
@@ -2247,6 +2244,7 @@ if st.session_state["training_finished"] and st.session_state["modelDownload"]:
 
 
 if st.session_state["training_finished"] and st.session_state["modelDownload"]:
+    import json
     # Función para convertir objetos no serializables a JSON
     def serialize_object(obj):
         if isinstance(obj, pd.DataFrame):
