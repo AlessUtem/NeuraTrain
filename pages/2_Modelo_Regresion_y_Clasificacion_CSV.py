@@ -13,6 +13,7 @@ from matplotlib.animation import FuncAnimation
 from keras.models import Sequential
 from keras.layers import Dense, Dropout, Conv2D, MaxPooling2D, Flatten
 from keras.optimizers import Adam, SGD, RMSprop
+from keras.callbacks import EarlyStopping
 from keras.datasets import mnist, fashion_mnist, cifar10
 from keras.utils import to_categorical
 from keras.regularizers import l2
@@ -21,6 +22,23 @@ from sklearn.datasets import load_iris, load_breast_cancer, load_digits, load_wi
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler, MinMaxScaler, LabelEncoder
 from sklearn.impute import SimpleImputer
+
+
+# Ajustar el ancho del sidebar con CSS personalizado
+st.markdown("""
+    <style>
+    /* Ajustar el ancho del sidebar */
+    [data-testid="stSidebar"] {
+        width: 300px; /* Cambia el valor según lo desees */
+    }
+    /* Ajustar el contenido del sidebar para que se ajuste al ancho */
+    [data-testid="stSidebar"] .css-1d391kg {
+        width: 300px; /* Cambia el valor para que coincida con el ancho del sidebar */
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+
 
 # Config
 
@@ -106,6 +124,36 @@ if 'y_test' not in st.session_state:
     st.session_state['y_test'] = None
 if 'split_type' not in st.session_state:
     st.session_state['split_type'] = "Entrenamiento y Prueba"  # Valor predeterminado1
+
+if 'scaler_y' not in st.session_state:
+    st.session_state['scaler_y'] = None
+
+if 'scaler_X' not in st.session_state:
+    st.session_state['scaler_X'] = None
+
+if 'early_stopping' not in st.session_state:
+    st.session_state['early_stopping'] = {
+        "enabled": False,
+        "patience": 0,
+        "monitor": "val_loss"
+    }
+
+
+if 'num_classes' not in st.session_state:
+    st.session_state['num_classes'] = 0
+
+if 'splits' not in st.session_state:
+    st.session_state['splits'] = []
+
+if 'disabled_button_train' not in st.session_state:
+    st.session_state['disabled_button_train'] = False
+
+if 'f1_score' not in st.session_state:
+    st.session_state['f1_score'] = 0
+if  'precision_score' not in st.session_state:
+    st.session_state['precision_score'] = 0
+if 'recall_score' not in st.session_state:
+    st.session_state['recall_score'] = 0
 
 # Inyectar CSS para capturar el color de fondo
 st.markdown(
@@ -551,229 +599,6 @@ def log_event(log_placeholder, message):
 from sklearn.metrics import f1_score, precision_score, recall_score, classification_report, confusion_matrix,ConfusionMatrixDisplay
 import pandas as pd
 
-def train_model(layers, hyperparams, preview_placeholder, dynamic_placeholder):
-    # Limpiar logs y placeholders
-    st.session_state['logs'] = []
-    st.session_state['loss_values'] = []
-    st.session_state['accuracy_values'] = []
-    st.session_state['val_loss_values'] = []
-    st.session_state['val_accuracy_values'] = []
-
-
-    preview_placeholder.empty()
-    
-
-    # Configuración de contenedores para evitar desplazamiento
-    col_dynamic, col_metrics = st.columns([6, 1])  # Ajusta proporciones
-
-    # Placeholder para gráfico dinámico (mantiene la posición)
-    dynamic_graph_placeholder = col_dynamic.empty()
-
-    # Placeholder para métricas y logs (separado del gráfico)
-    metrics_placeholder = col_metrics.empty()
-    log_placeholder = col_metrics.empty()
-    
-    loss_chart_placeholder = col_metrics.empty()
-    accuracy_chart_placeholder = col_metrics.empty()
-
-    # Recuperar datos configurados previamente
-    if not st.session_state.get("dataset_split", False):
-        st.error("El dataset no está configurado correctamente. Configúralo antes de entrenar.")
-        return
-
-    splits = st.session_state['splits']
-    if len(splits) == 4:  # Entrenamiento y prueba
-        X_train, X_test, y_train, y_test = splits
-        X_val, y_val = None, None
-    elif len(splits) == 6:  # Entrenamiento, validación y prueba
-        X_train, X_val, X_test, y_train, y_val, y_test = splits
-    else:
-        st.error("La división del dataset no es válida. Reconfigura el dataset.")
-        return
-
-    input_shape = (X_train.shape[1],)
-    problem_type = st.session_state['problem_type']
-
-    # Preparar etiquetas para clasificación
-    if problem_type == "Clasificación":
-        num_classes = len(np.unique(y_train))
-        if np.any(y_train >= num_classes) or np.any(y_train < 0):
-            st.error("Error: Hay etiquetas fuera del rango válido para la clasificación.")
-            return
-        y_train = to_categorical(y_train, num_classes)
-        if y_val is not None:
-            y_val = to_categorical(y_val, num_classes)
-        y_test_original = y_test  # Guardar etiquetas originales
-        y_test = to_categorical(y_test, num_classes)
-
-    # Crear el modelo
-    model = Sequential()
-    for i, layer in enumerate(layers):
-        if layer['type'] == "Dense":
-            # Añadir regularización L2
-            regularizer = None
-            if 'regularization' in layer and layer['regularization'] == 'l2':
-                regularizer = tf.keras.regularizers.l2(layer['regularization_rate'])
-
-            model.add(Dense(
-                layer['neurons'],
-                activation=layer['activation'],
-                input_shape=input_shape if i == 0 else None
-            ))
-        elif layer['type'] == "Dropout":
-            model.add(Dropout(layer['dropout_rate']))
-
-    # Capa de salida
-    #if problem_type == "Clasificación":
-    #    model.add(Dense(num_classes, activation="softmax"))
-    #    loss_function = "categorical_crossentropy"
-    #else:  # Regresión
-    #    model.add(Dense(1, activation="linear"))
-    #    loss_function = "mean_squared_error"
-
-    # Configuración del optimizador
-    optimizers = {
-        "Adam": Adam(learning_rate=hyperparams['learning_rate']),
-        "SGD": SGD(learning_rate=hyperparams['learning_rate']),
-        "RMSprop": RMSprop(learning_rate=hyperparams['learning_rate'])
-    }
-    optimizer = optimizers[hyperparams['optimizer']]
-    loss_function = hyperparams['loss_function']
-
-
-    model.compile(
-        optimizer=optimizer,
-        loss=loss_function,
-        metrics=["accuracy"] if problem_type == "Clasificación" else ["mae"]  # Precisión para clasificación, MAE para regresión
-    )
-
-    # Inicialización de métricas
-    loss_values = []
-    accuracy_values = []
-    val_loss_values = []
-    val_accuracy_values = []
-
-    # Entrenamiento por épocas
-    for epoch in range(hyperparams['epochs']):
-        start_time = time.time()
-        log_event(log_placeholder, f"Época {epoch + 1}/{hyperparams['epochs']} iniciada.")
-
-        # Animación del gráfico dinámico
-        update_graph_with_smooth_color_transition(
-            st.session_state['graph'],
-            epoch,
-            dynamic_graph_placeholder,
-            neurons_per_point=12,
-            animation_steps=15
-        )
-
-        # Entrenar el modelo
-        history = model.fit(
-            X_train, y_train,
-            validation_data=(X_val, y_val) if X_val is not None else None,
-            batch_size=hyperparams['batch_size'],
-            epochs=1,
-            verbose=0
-        )
-
-        # Actualizar métricas
-        loss = history.history['loss'][0]
-        accuracy = history.history.get('accuracy', [None])[0]
-        val_loss = history.history.get('val_loss', [None])[0]
-        val_accuracy = history.history.get('val_accuracy', [None])[0]
-
-        st.session_state['loss_values'].append(loss)
-        if accuracy is not None:
-            st.session_state['accuracy_values'].append(accuracy)
-        if val_loss is not None:
-            st.session_state['val_loss_values'].append(val_loss)
-        if val_accuracy is not None:
-            st.session_state['val_accuracy_values'].append(val_accuracy)
-
-
-        # Gráfico de pérdida (aplica a ambos tipos de problemas)
-        with loss_chart_placeholder:
-            fig_loss, ax_loss = plt.subplots(figsize=(4, 2))
-            ax_loss.plot(range(1, len(st.session_state['loss_values']) + 1),
-                        st.session_state['loss_values'], marker='o', color='blue', label="Pérdida")
-            if st.session_state['val_loss_values']:
-                ax_loss.plot(range(1, len(st.session_state['val_loss_values']) + 1),
-                            st.session_state['val_loss_values'], linestyle="--", color='red', label="Validación")
-            ax_loss.set_title("Pérdida")
-            ax_loss.grid(True)
-            ax_loss.legend()
-            loss_chart_placeholder.pyplot(fig_loss, clear_figure=True)
-
-        # Gráfico de precisión (solo para clasificación)
-        if problem_type == "Clasificación":
-            with accuracy_chart_placeholder:
-                if st.session_state['accuracy_values']:
-                    fig_accuracy, ax_accuracy = plt.subplots(figsize=(4, 2))
-                    ax_accuracy.plot(range(1, len(st.session_state['accuracy_values']) + 1),
-                                    st.session_state['accuracy_values'], marker='o', color='green', label="Precisión")
-                    if st.session_state['val_accuracy_values']:
-                        ax_accuracy.plot(range(1, len(st.session_state['val_accuracy_values']) + 1),
-                                        st.session_state['val_accuracy_values'], linestyle="--", color='orange', label="Validación")
-                    ax_accuracy.set_title("Precisión")
-                    ax_accuracy.grid(True)
-                    ax_accuracy.legend()
-                    accuracy_chart_placeholder.pyplot(fig_accuracy, clear_figure=True)
-        else:
-            with accuracy_chart_placeholder:
-                if accuracy is not None:
-                    fig_accuracy, ax_accuracy = plt.subplots(figsize=(4, 2))
-                    ax_accuracy.plot(range(1, len(accuracy_values) + 1), accuracy_values, marker='o', color='green', label="Precisión")
-                    if val_accuracy is not None:
-                        ax_accuracy.plot(range(1, len(val_accuracy_values) + 1), val_accuracy_values, linestyle="--", color='orange', label="Validación")
-                    ax_accuracy.set_title("Precisión")
-                    ax_accuracy.grid(True)
-                    ax_accuracy.legend()
-                    accuracy_chart_placeholder.pyplot(fig_accuracy, clear_figure=True)
-
-        # Verificar valores de las métricas y asignar 'N/A' si son None
-        loss_str = f"{loss:.4f}" if loss is not None else "N/A"
-        accuracy_str = f"{accuracy:.4f}" if accuracy is not None else "N/A"
-        val_loss_str = f"{val_loss:.4f}" if val_loss is not None else "N/A"
-        val_accuracy_str = f"{val_accuracy:.4f}" if val_accuracy is not None else "N/A"
-
-        # Log de fin de época
-        elapsed_time = time.time() - start_time
-        log_event(
-            log_placeholder,
-            f"Época {epoch + 1} completada en {elapsed_time:.2f} segundos. "
-            f"Pérdida: {loss_str}, Precisión: {accuracy_str}, "
-            f"Pérdida Validación: {val_loss_str}, Precisión Validación: {val_accuracy_str}"
-        )
-
-    # Calcular métricas finales
-    # Mostrar métricas finales según el tipo de problema
-    if problem_type == "Clasificación":
-        y_pred = np.argmax(model.predict(X_test), axis=1)
-        f1 = f1_score(y_test_original, y_pred, average='weighted')
-        precision = precision_score(y_test_original, y_pred, average='weighted')
-        recall = recall_score(y_test_original, y_pred, average='weighted')
-
-        st.write("### Métricas Finales - Clasificación")
-        st.write(f"**F1 Score:** {f1:.4f}")
-        st.write(f"**Precisión (Precision):** {precision:.4f}")
-        st.write(f"**Recall:** {recall:.4f}")
-        st.text(classification_report(y_test_original, y_pred))
-    else:
-        st.write("### Métricas Finales - Regresión")
-        final_loss = st.session_state['loss_values'][-1]
-        st.write(f"**Pérdida Final (MAE):** {final_loss:.4f}")
-        if st.session_state['val_loss_values']:
-            final_val_loss = st.session_state['val_loss_values'][-1]
-            st.write(f"**Pérdida Validación Final (MAE):** {final_val_loss:.4f}")
-
-
-
-    # Guardar modelo entrenado
-    st.session_state["modelDownload"] = model
-    st.success("Entrenamiento finalizado con éxito.")
-
-
-
 
 
 def train_model_classification(layers, hyperparams, preview_placeholder, dynamic_placeholder):
@@ -807,15 +632,22 @@ def train_model_classification(layers, hyperparams, preview_placeholder, dynamic
         return
 
 
+    # Configurar Early Stopping si está habilitado
+    callbacks = []
+    early_stopping_config = st.session_state.get('early_stopping', {})
+    if early_stopping_config.get("enabled", False):
+        patience = early_stopping_config.get("patience", 0)
+        monitor_metric = early_stopping_config.get("monitor", "val_loss")
+        early_stopping = EarlyStopping(
+            monitor=monitor_metric,
+            patience=patience,
+            restore_best_weights=True,
+            verbose=1
+        )
+        callbacks.append(early_stopping)
+        log_event(log_placeholder, f"Early Stopping habilitado: Monitoreando '{monitor_metric}' con paciencia de {patience} épocas.")
 
-    st.write("Validación inmediata de dimensiones después de la división:")
-    st.write(f"Dimensiones de X_train: {X_train.shape}")
-    st.write(f"Dimensiones de X_val: {X_val.shape}")
-    st.write(f"Dimensiones de X_test: {X_test.shape}")
-    st.write(f"Dimensiones de y_train: {y_train.shape}")
-    st.write(f"Dimensiones de y_val: {y_val.shape}")
-    st.write(f"Dimensiones de y_test: {y_test.shape}")
-    st.write(f"Dimensiones de y_test_original: {st.session_state["y_test_original"].shape}")
+
 
     # Validar dimensiones antes del entrenamiento
     if len(st.session_state["splits"][3]) != len(st.session_state["splits"][3]):
@@ -854,13 +686,13 @@ def train_model_classification(layers, hyperparams, preview_placeholder, dynamic
         log_event(log_placeholder, f"Época {epoch + 1}/{hyperparams['epochs']} iniciada.")
 
         if X_val is not None and y_val is not None:
-            # Con conjunto de validación
+            # Con conjunto de validación  
             history = model.fit(X_train, y_train, validation_data=(X_val, y_val),
-                                batch_size=hyperparams['batch_size'], epochs=1, verbose=0)
+                                batch_size=hyperparams['batch_size'], epochs=1, verbose=0, callbacks=callbacks)
         else:
             # Sin conjunto de validación
-            history = model.fit(X_train, y_train, batch_size=hyperparams['batch_size'], 
-                                epochs=1, verbose=0)
+            history = model.fit(X_train, y_train, batch_size=hyperparams['batch_size'],
+                                epochs=1, verbose=0, callbacks=callbacks)
 
         # Registrar métricas
         train_loss = history.history['loss'][0]
@@ -897,12 +729,13 @@ def train_model_classification(layers, hyperparams, preview_placeholder, dynamic
     st.session_state["modelDownload"] = model
     st.success("Entrenamiento finalizado con éxito.")
 
-
 def train_model_regression(layers, hyperparams, preview_placeholder, dynamic_placeholder):
     # Limpiar logs y placeholders
     st.session_state['logs'] = []
     st.session_state['loss_values'] = []
+    st.session_state['mae_values'] = []
     st.session_state['val_loss_values'] = []
+    st.session_state['val_mae_values'] = []
 
     preview_placeholder.empty()
 
@@ -927,15 +760,33 @@ def train_model_regression(layers, hyperparams, preview_placeholder, dynamic_pla
         st.error("La división del dataset no es válida. Reconfigura el dataset.")
         return
 
+
+    # Configurar Early Stopping si está habilitado
+    callbacks = []
+    early_stopping_config = st.session_state.get('early_stopping', {})
+    if early_stopping_config.get("enabled", False):
+        patience = early_stopping_config.get("patience", 0)
+        monitor_metric = early_stopping_config.get("monitor", "val_loss")
+        early_stopping = EarlyStopping(
+            monitor=monitor_metric,
+            patience=patience,
+            restore_best_weights=True,
+            verbose=1
+        )
+        callbacks.append(early_stopping)
+        log_event(log_placeholder, f"Early Stopping habilitado: Monitoreando '{monitor_metric}' con paciencia de {patience} épocas.")
+
+
     # Crear modelo
     input_shape = (X_train.shape[1],)
     model = Sequential()
     for i, layer in enumerate(layers):
         if layer['type'] == "Dense":
-            model.add(Dense(layer['neurons'], activation=layer['activation'], input_shape=input_shape if i == 0 else None,kernel_regularizer=l2(layer['l2']) if layer.get('enable_l2', False) else None))
+            model.add(Dense(layer['neurons'], activation=layer['activation'],
+                            input_shape=input_shape if i == 0 else None,
+                            kernel_regularizer=l2(layer['l2']) if layer.get('enable_l2', False) else None))
         elif layer['type'] == "Dropout":
             model.add(Dropout(layer['dropout_rate']))
-    model.add(Dense(1, activation="linear"))
 
     # Configurar optimizador y compilar modelo
     optimizer = Adam(learning_rate=hyperparams['learning_rate'])
@@ -947,42 +798,37 @@ def train_model_regression(layers, hyperparams, preview_placeholder, dynamic_pla
 
         if X_val is not None and y_val is not None:
             history = model.fit(X_train, y_train, validation_data=(X_val, y_val),
-                                batch_size=hyperparams['batch_size'], epochs=1, verbose=0)
+                                batch_size=hyperparams['batch_size'], epochs=1, verbose=0, callbacks=callbacks)
         else:
-            history = model.fit(X_train, y_train, batch_size=hyperparams['batch_size'], 
-                                epochs=1, verbose=0)
+            history = model.fit(X_train, y_train, batch_size=hyperparams['batch_size'],
+                                epochs=1, verbose=0, callbacks=callbacks)
 
-        # Registrar métricas
+        # Registrar métricas de entrenamiento
         train_loss = history.history['loss'][0]
         train_mae = history.history['mae'][0]
-        log_event(log_placeholder, f"Época {epoch + 1}: Pérdida (MSE) en entrenamiento: {train_loss:.4f}")
-        log_event(log_placeholder, f"Época {epoch + 1}: Error absoluto medio (MAE) en entrenamiento: {train_mae:.4f}")
+        log_event(log_placeholder, f"Entrenamiento - Pérdida (MSE): {train_loss:.4f}, Precisión (MAE): {train_mae:.4f}")
 
+        # Registrar métricas de validación, si aplican
         if X_val is not None:
             val_loss = history.history['val_loss'][0]
             val_mae = history.history['val_mae'][0]
-            log_event(log_placeholder, f"Época {epoch + 1}: Pérdida (MSE) en validación: {val_loss:.4f}")
-            log_event(log_placeholder, f"Época {epoch + 1}: Error absoluto medio (MAE) en validación: {val_mae:.4f}")
+            log_event(log_placeholder, f"Validación - Pérdida (MSE): {val_loss:.4f}, Precisión (MAE): {val_mae:.4f}")
 
         # Actualizar métricas para gráficos
         st.session_state['loss_values'].append(train_loss)
+        st.session_state['mae_values'].append(train_mae)
         if X_val is not None:
             st.session_state['val_loss_values'].append(val_loss)
+            st.session_state['val_mae_values'].append(val_mae)
 
         # Actualizar visualización dinámica
         update_graph_with_smooth_color_transition(
             st.session_state['graph'], epoch, dynamic_graph_placeholder, neurons_per_point=10, animation_steps=30
         )
 
-    # Métricas finales
-    final_loss = st.session_state['loss_values'][-1]
-    st.write(f"Pérdida Final (MSE): {final_loss:.4f}")
+    # Guardar modelo
     st.session_state["modelDownload"] = model
     st.success("Entrenamiento finalizado con éxito.")
-
-
-
-
 
 
 
@@ -1010,7 +856,6 @@ def update_layer_config():
                 "name": f"Layer{i + 1}",
                 "type": "Dense",
                 "neurons": 64,
-                "dropout_rate": 0.2
             })
     elif num_layers < current_num_layers:
         # Reducir capas
@@ -1088,70 +933,10 @@ from sklearn.metrics import mean_squared_error
 
 
 
-# Configuración con pestañas
-tabs = st.sidebar.radio("Configuración:", ["Dataset","Capas", "Hiperparámetros", "Early Stopping"])
-
 
 # Configuración del Dataset
 from sklearn.impute import SimpleImputer
 import numpy as np
-
-
-
-# Aplicar ajustes avanzados
-def apply_advanced_settings(X_train, X_test, numeric_null_option, categorical_null_option, normalize_data, scaling_option, encoding_option):
-    # Manejo de valores nulos - Numéricos
-    numeric_cols = X_train.select_dtypes(include=np.number).columns
-    if numeric_null_option == "Eliminar filas":
-        X_train.dropna(subset=numeric_cols, inplace=True)
-        X_test.dropna(subset=numeric_cols, inplace=True)
-    elif numeric_null_option == "Reemplazar con 0":
-        X_train[numeric_cols] = X_train[numeric_cols].fillna(0)
-        X_test[numeric_cols] = X_test[numeric_cols].fillna(0)
-    elif numeric_null_option == "Reemplazar con la media":
-        imputer = SimpleImputer(strategy='mean')
-        X_train[numeric_cols] = imputer.fit_transform(X_train[numeric_cols])
-        X_test[numeric_cols] = imputer.transform(X_test[numeric_cols])
-    elif numeric_null_option == "Reemplazar con la mediana":
-        imputer = SimpleImputer(strategy='median')
-        X_train[numeric_cols] = imputer.fit_transform(X_train[numeric_cols])
-        X_test[numeric_cols] = imputer.transform(X_test[numeric_cols])
-    elif numeric_null_option == "Propagar adelante/atrás":
-        X_train[numeric_cols] = X_train[numeric_cols].fillna(method='ffill').fillna(method='bfill')
-        X_test[numeric_cols] = X_test[numeric_cols].fillna(method='ffill').fillna(method='bfill')
-
-    # Manejo de valores nulos - Categóricos
-    categorical_cols = X_train.select_dtypes(include=['object', 'category']).columns
-    if categorical_null_option == "Eliminar filas":
-        X_train.dropna(subset=categorical_cols, inplace=True)
-        X_test.dropna(subset=categorical_cols, inplace=True)
-    elif categorical_null_option == "Reemplazar con 'Ninguno'":
-        X_train[categorical_cols] = X_train[categorical_cols].fillna('Ninguno')
-        X_test[categorical_cols] = X_test[categorical_cols].fillna('Ninguno')
-    elif categorical_null_option == "Reemplazar con la moda":
-        imputer = SimpleImputer(strategy='most_frequent')
-        X_train[categorical_cols] = imputer.fit_transform(X_train[categorical_cols])
-        X_test[categorical_cols] = imputer.transform(X_test[categorical_cols])
-
-    # Normalización y escalamiento
-    if normalize_data:
-        scaler = StandardScaler() if scaling_option == "StandardScaler" else MinMaxScaler()
-        X_train[numeric_cols] = scaler.fit_transform(X_train[numeric_cols])
-        X_test[numeric_cols] = scaler.transform(X_test[numeric_cols])
-
-    # Codificación de variables categóricas
-    if encoding_option == "One-Hot Encoding":
-        X_train = pd.get_dummies(X_train, columns=categorical_cols)
-        X_test = pd.get_dummies(X_test, columns=categorical_cols)
-        X_train, X_test = X_train.align(X_test, join='left', axis=1, fill_value=0)
-    elif encoding_option == "Label Encoding":
-        label_encoder = LabelEncoder()
-        for col in categorical_cols:
-            X_train[col] = label_encoder.fit_transform(X_train[col].astype(str))
-            X_test[col] = label_encoder.transform(X_test[col].astype(str))
-
-    return X_train, X_test
-
 
 
 
@@ -1165,20 +950,30 @@ def configure_dataset():
     problem_type = st.sidebar.selectbox(
         "Seleccione el tipo de problema",
         ["Clasificación", "Regresión"],
-        key="problem_type_selectbox"
+        key="problem_type_selectbox",
+        help="Clasificación es para predecir categorías, como tipos de flores. Regresión es para predecir valores continuos, como precios de casas."
     )
+    st.sidebar.info("""
+        **Definición**: El dataset es el conjunto de datos que será utilizado para entrenar y evaluar el modelo. 
+
+        **Sugerencia**: Selecciona un tipo de problema (clasificación o regresión) y el dataset apropiado para el tipo de análisis que deseas realizar. 
+        Por ejemplo:
+        - **Clasificación**: Usarás el modelo para predecir categorías, como tipos de flores.
+        - **Regresión**: Usarás el modelo para predecir valores continuos, como precios de casas.
+        """)
 
     st.session_state['problem_type'] = problem_type
 
     dataset_name = st.sidebar.selectbox(
         "Seleccione el dataset",
         ["Iris", "Wine", "Breast Cancer", "Digits"] if problem_type == "Clasificación" else ["Boston Housing", "Diabetes"],
-        key="dataset_name_selectbox"
+        key="dataset_name_selectbox",
+        help="Elija el dataset apropiado según el tipo de problema que seleccionó anteriormente."
     )
 
     st.session_state['selected_dataset'] = dataset_name
 
-    if st.sidebar.button("Cargar Dataset", key="load_dataset_button"):
+    if st.sidebar.button("Cargar Dataset", key="load_dataset_button",):
     # Reiniciar el estado relacionado con el dataset al cambiarlo
         if st.session_state.get("dataset_loaded", False):
             st.session_state["dataset_loaded"] = False
@@ -1208,7 +1003,8 @@ def configure_dataset():
         target_variable = st.sidebar.selectbox(
             "Seleccione la variable objetivo:",
             st.session_state["full_dataset"].columns,
-            key="target_variable_selectbox"
+            key="target_variable_selectbox",
+            help="Seleccione la columna que desea predecir. Por ejemplo, en un dataset de casas, puede ser el precio."
         )
         if target_variable != st.session_state.get("target_variable", None):
             st.session_state["target_variable"] = target_variable
@@ -1219,7 +1015,7 @@ def configure_dataset():
         st.sidebar.write("Características (X):", st.session_state["X_original"].head())
         # Verificar si y_original es un numpy.ndarray y convertirlo en un DataFrame/Series antes de usar .head()
         if isinstance(st.session_state["y_original"], np.ndarray):
-            y_display = pd.Series(st.session_state["y_original"])
+            y_display = pd.Series(st.session_state["y_original"].ravel())
         else:
             y_display = st.session_state["y_original"]
 
@@ -1232,7 +1028,8 @@ def configure_dataset():
         selected_columns = st.sidebar.multiselect(
             "Seleccione las columnas a eliminar",
             st.session_state["X_original"].columns,
-            key="columns_to_drop_multiselect"
+            key="columns_to_drop_multiselect",
+            help="Elimine columnas irrelevantes o redundantes, como IDs o nombres que no aporten al análisis."
         )
         if st.sidebar.button("Aplicar Eliminación", key="apply_column_removal_button"):
             if target_variable in selected_columns:
@@ -1258,12 +1055,14 @@ def configure_dataset():
             numeric_null_option = st.sidebar.selectbox(
                 "Valores Nulos - Numéricos",
                 ["Eliminar filas", "Reemplazar con 0", "Reemplazar con la media", "Reemplazar con la mediana"],
-                key="numeric_null_option_selectbox"
+                key="numeric_null_option_selectbox",
+                help="Elija cómo manejar valores nulos en columnas numéricas. Por ejemplo, reemplazar con la media es útil en la mayoría de los casos."
             )
             categorical_null_option = st.sidebar.selectbox(
                 "Valores Nulos - Categóricos",
                 ["Eliminar filas", "Reemplazar con 'Ninguno'", "Reemplazar con la moda"],
-                key="categorical_null_option_selectbox"
+                key="categorical_null_option_selectbox",
+                help="Elija cómo manejar valores nulos en columnas categóricas. Por ejemplo, reemplazar con la moda es común en problemas de clasificación."
             )
             if st.sidebar.button("Aplicar Manejo de Nulos", key="apply_null_handling_button"):
                 X_cleaned = handle_nulls(st.session_state["X_original"], numeric_null_option, categorical_null_option)
@@ -1285,7 +1084,8 @@ def configure_dataset():
                 encoding_option = st.sidebar.selectbox(
                     "Método de Codificación para características (X):",
                     ["One-Hot Encoding", "Label Encoding"],
-                    key="encoding_option_selectbox"
+                    key="encoding_option_selectbox",
+                    help="Use One-Hot Encoding para categorías sin orden (como colores). Use Label Encoding para categorías ordenadas (como niveles de educación)."
                 )
                 if st.sidebar.button("Aplicar Codificación en X", key="apply_encoding_button"):
                     X_encoded = encode_categorical(st.session_state["X_original"], encoding_option)
@@ -1311,13 +1111,24 @@ def configure_dataset():
             scaling_option = st.sidebar.selectbox(
                 "Método de Escalamiento:",
                 ["StandardScaler", "MinMaxScaler"],
-                key="scaling_option_selectbox"
+                key="scaling_option_selectbox",
+                help="StandardScaler es útil para datos con distribución normal. MinMaxScaler es útil para datos en rangos específicos."
             )
-            if st.sidebar.button("Aplicar Escalamiento", key="apply_scaling_button"):
+            if st.sidebar.button("Aplicar Escalamiento", key="apply_scaling_button",help="Aplica un escalamiento a la variable objetivo para mejorar el rendimiento del modelo en problemas de regresión."):
                 numeric_columns = st.session_state["X_original"].select_dtypes(include=["float64", "int64"]).columns
-                scaler = StandardScaler() if scaling_option == "StandardScaler" else MinMaxScaler()
-                scaled_data = scaler.fit_transform(st.session_state["X_original"][numeric_columns])
+                scaler_x = StandardScaler() if scaling_option == "StandardScaler" else MinMaxScaler()
+                scaled_data = scaler_x.fit_transform(st.session_state["X_original"][numeric_columns])
                 st.session_state["X_original"].loc[:, numeric_columns] = scaled_data
+                st.session_state["scaler_x"] = scaler_x
+                # Escalamiento de la variable objetivo (y) en caso de regresión
+                if st.session_state["problem_type"] == "Regresión":
+                    st.sidebar.subheader("Escalamiento de la Variable Objetivo (y)")
+                    scaler_y = StandardScaler() if scaling_option == "StandardScaler" else MinMaxScaler()
+                    y_scaled = scaler_y.fit_transform(st.session_state["y_original"].values.reshape(-1, 1))
+                    st.session_state["y_original"] = y_scaled
+                    st.session_state["scaler_y"] = scaler_y  # Guardar el escalador para revertir predicciones
+                    st.sidebar.success("Escalamiento aplicado a la variable objetivo (y).")
+                    st.sidebar.write("Vista previa de la variable objetivo escalada:", st.session_state["y_original"][:5])                 
                 st.session_state["scaling_done"] = True
                 st.sidebar.success("Escalamiento aplicado con éxito.")
                 st.sidebar.write("Vista previa del dataset escalado:", st.session_state["X_original"].head())
@@ -1335,18 +1146,20 @@ def configure_dataset():
             split_type = st.sidebar.selectbox(
                 "Tipo de División:",
                 ["Entrenamiento y Prueba", "Entrenamiento, Validación y Prueba"],
-                key="split_type_selectbox"
+                key="split_type_selectbox",
+                help="Entrenamiento y Prueba es una división básica. Agregar Validación ayuda a ajustar el modelo y prevenir sobreajuste."
             )
             st.session_state["split_type"] = split_type
-            train_ratio = st.sidebar.slider("Entrenamiento (%)", 10, 90, 70, key="train_ratio_slider")
+            train_ratio = st.sidebar.slider("Entrenamiento (%)", 10, 90, 70, key="train_ratio_slider",help="Seleccione el porcentaje de datos que se usarán para entrenar el modelo. Usualmente es entre 70-80%.")
 
             # Calcular proporciones para validación y prueba
             if split_type == "Entrenamiento, Validación y Prueba":
-                val_ratio = st.sidebar.slider("Validación (%)", 5, 50, 15, key="val_ratio_slider")
+                val_ratio = st.sidebar.slider("Validación (%)", 5, 50, 15, key="val_ratio_slider",help="El porcentaje restante se divide entre validación y prueba. Asegúrate de dejar suficientes datos para cada conjunto.")
                 test_ratio = 100 - train_ratio - val_ratio
             else:
                 val_ratio = 0
                 test_ratio = 100 - train_ratio
+
 
             st.sidebar.text(f"Prueba (%): {test_ratio}")
             
@@ -1381,6 +1194,9 @@ def configure_dataset():
                     if len(X_test) != len(y_test):
                         st.error("Dimensiones inconsistentes entre X_test y y_test después de la división.")
 
+                st.session_state['train_ratio'] = train_ratio
+                st.session_state['val_ratio'] = val_ratio
+                st.session_state['test_ratio'] = test_ratio
 
 
                 # Verificación de dimensiones
@@ -1390,11 +1206,13 @@ def configure_dataset():
                     X_train, X_test, y_train, y_test = splits
                 elif len(splits) == 6:
                     X_train, X_val, X_test, y_train, y_val, y_test = splits
-
+                
                 if len(X_test) != len(y_test):
                     st.error("Dimensiones inconsistentes entre X_test y y_test después de la división.")
                     st.stop()
-
+                if problem_type == "Clasificación":
+                    num_classes = len(np.unique(y_train))
+                    st.session_state['num_classes'] = num_classes
                 # Guardar copia de y_test_original para referencia
                 st.session_state["y_test_original"] = y_test.copy()
 
@@ -1462,27 +1280,6 @@ def handle_nulls(X, numeric_null_option, categorical_null_option):
 
 
 
-# Función para normalizar y escalar datos numéricos
-def normalize_and_scale(X, scaling_option):
-    """
-    Normaliza y escala las columnas numéricas de un DataFrame.
-    """
-    # Selecciona solo columnas numéricas
-    numeric_cols = X.select_dtypes(include=np.number).columns
-    if numeric_cols.empty:
-        raise ValueError("No hay columnas numéricas para escalar.")
-
-    # Selecciona el tipo de escalador
-    scaler = StandardScaler() if scaling_option == "StandardScaler" else MinMaxScaler()
-    
-    # Aplica el escalamiento
-    X_scaled = X.copy()
-    X_scaled[numeric_cols] = scaler.fit_transform(X[numeric_cols])
-    
-    return X_scaled
-
-
-
 # Función para codificar variables categóricas
 def encode_categorical(X, encoding_option):
     """
@@ -1515,6 +1312,103 @@ def encode_categorical(X, encoding_option):
 
     return X
 
+
+
+def validate_layer_config(layer_config, problem_type):
+    warnings = []
+    output_layer = layer_config[-1]  # Última capa
+    num_classes = st.session_state['num_classes']
+    # Validar que la última capa sea adecuada para el problema
+        
+    if st.session_state['splits'] == []:  
+        warnings.append("Primero debes dividir el dataset antes de entrenar el modelo.")
+        st.session_state['disabled_button_train'] = True
+        return warnings
+    if problem_type == "Clasificación":
+        if num_classes == 2:  # Clasificación Binaria
+            if output_layer['neurons'] != 1 or output_layer['activation'] != "sigmoid":
+                warnings.append("Para clasificación binaria, la capa de salida debe tener 1 neurona con activación 'sigmoid'.")
+        elif num_classes > 2:  # Clasificación Multiclase
+            if output_layer['neurons'] != num_classes or output_layer['activation'] != "softmax":
+                warnings.append(f"Para clasificación multiclase, la capa de salida debe tener {num_classes} neuronas con activación 'softmax'.")
+    elif problem_type == "Regresión":
+        if output_layer['neurons'] != 1 or output_layer['activation'] != "linear":
+            warnings.append("Para problemas de regresión, la capa de salida debe tener 1 neurona con activación 'linear'.")
+    elif problem_type == "Clasificación Multietiqueta":
+        if output_layer['neurons'] != num_classes or output_layer['activation'] != "sigmoid":
+            warnings.append(f"Para clasificación multietiqueta, la capa de salida debe tener {num_classes} neuronas con activación 'sigmoid'.")
+
+    # Validar uso adecuado de capas Flatten
+    flatten_count = sum(1 for layer in layer_config if layer['type'] == "Flatten")
+    if flatten_count > 1:
+        warnings.append("Se detectaron múltiples capas 'Flatten'. Generalmente sólo se necesita una.")
+    elif flatten_count == 0 and any(layer['type'] in ["Conv2D", "MaxPooling2D"] for layer in layer_config):
+        warnings.append("Se requiere al menos una capa 'Flatten' después de 'Conv2D' o 'MaxPooling2D' para conectar con capas densas.")
+
+    # Validar uso de Dropout en redes profundas
+    if len(layer_config) > 5 and not any(layer['type'] == "Dropout" for layer in layer_config):
+        warnings.append("Se recomienda incluir capas 'Dropout' para prevenir el sobreajuste en redes profundas.")
+
+    # Validar configuración de Conv2D y MaxPooling2D
+    if any(layer['type'] == "Conv2D" for layer in layer_config) and not any(layer['type'] == "MaxPooling2D" for layer in layer_config):
+        warnings.append("Se recomienda agregar una capa 'MaxPooling2D' después de 'Conv2D' para reducir dimensiones.")
+
+    # Validar que Conv2D tenga un número razonable de filtros
+    for layer in layer_config:
+        if layer['type'] == "Conv2D" and layer.get('filters', 0) < 8:
+            warnings.append("Las capas 'Conv2D' deberían tener al menos 8 filtros para ser efectivas.")
+
+    # Validar que Dropout tenga valores razonables
+    for layer in layer_config:
+        if layer['type'] == "Dropout" and not (0.0 < layer.get('dropout_rate', 0.0) <= 0.9):
+            warnings.append("La capa 'Dropout' debe tener una tasa entre 0.1 y 0.9.")
+
+    # Validar que las capas Dense tengan un número positivo de neuronas
+    for layer in layer_config:
+        if layer['type'] == "Dense" and layer.get('neurons', 0) <= 0:
+            warnings.append("Las capas 'Dense' deben tener un número positivo de neuronas.")
+
+    # Validar que la primera capa sea adecuada para el dataset
+    if problem_type == "Clasificación" and layer_config[0]['type'] != "Dense":
+        warnings.append("La primera capa debe ser de tipo 'Dense' para manejar correctamente los datos de entrada en problemas de clasificación.")
+    elif problem_type == "Regresión" and layer_config[0]['type'] != "Dense":
+        warnings.append("La primera capa debe ser de tipo 'Dense' para manejar correctamente los datos de entrada en problemas de regresión.")
+
+    # Validar que BatchNormalization no sea la última capa
+    if layer_config[-1]['type'] == "BatchNormalization":
+        warnings.append("La última capa no debe ser 'BatchNormalization'. Considera moverla antes de la capa de salida.")
+
+    # Validar que las dimensiones de salida sean compatibles con el problema
+    if problem_type == "Clasificación":
+        num_classes = st.session_state.get('num_classes', 0)
+        if num_classes > 2 and layer_config[-1].get('neurons', 1) != num_classes:
+            warnings.append(f"La última capa debe tener {num_classes} neuronas para coincidir con el número de clases en el problema de clasificación.")
+    elif problem_type == "Regresión":
+        if layer_config[-1].get('neurons', 1) != 1:
+            warnings.append("La última capa debe tener exactamente 1 neurona para problemas de regresión.")
+
+    # Validar que MaxPooling2D tenga un tamaño de pool razonable
+    for layer in layer_config:
+        if layer['type'] == "MaxPooling2D" and layer.get('pool_size', 1) <= 0:
+            warnings.append("La capa 'MaxPooling2D' debe tener un tamaño de pool mayor a 0.")
+
+    return warnings
+
+
+# Configuración con pestañas
+tabs = st.sidebar.radio("Configuración:", ["Dataset","Capas", "Hiperparámetros", "Early Stopping"],disabled=st.session_state['disable_other_tabs'] if 'disable_other_tabs' in st.session_state else False)
+
+# Validar configuración de capas
+if st.session_state['layer_config'] != []: 
+    warnings = validate_layer_config(st.session_state['layer_config'], st.session_state['problem_type'])
+    # Mostrar advertencias al usuario
+    if warnings:
+        st.sidebar.warning("⚠️ Se detectaron posibles problemas en la configuración de las capas:")
+        for warning in warnings:
+            st.sidebar.write(f"- {warning}")
+    else:
+        st.sidebar.success("✅ La configuración de capas parece adecuada para el problema seleccionado.")
+
 # Configuración del Dataset
 if tabs == "Dataset":
    # Configuración del Dataset
@@ -1524,7 +1418,15 @@ if tabs == "Dataset":
 
 # Visualizar ejemplos del dataset
 elif tabs == "Capas":
-    st.sidebar.subheader("Configuración de Capas")
+    st.sidebar.subheader("Configuración de Capas",help="Definición: La configuración de capas es un paso clave para diseñar una red neuronal, definiendo cómo procesará los datos y aprenderá durante el entrenamiento. Sugerencia: Si no estás seguro de cómo diseñar la arquitectura, selecciona una de las arquitecturas predefinidas para tu dataset y ajusta las capas según sea necesario.")
+    st.sidebar.info("""
+    **Definición**: Cada capa en una red neuronal tiene una función específica para procesar los datos. Las configuraciones permiten personalizar cómo se comporta cada capa.
+
+    **Sugerencia**:
+    - Comienza con pocas capas si no estás seguro de cómo diseñar la arquitectura.
+    - Usa **Dropout** si notas que el modelo se ajusta demasiado a los datos de entrenamiento.
+    - Agrega **BatchNormalization** para estabilizar el entrenamiento si utilizas redes profundas.
+    """)
 
     # Seleccionar arquitectura base
     st.sidebar.subheader("Arquitectura")
@@ -1589,7 +1491,14 @@ elif tabs == "Capas":
                 valid_types,
                 index=valid_types.index(layer.get("type", "Dense")),
                 key=f"layer_type_{i}",
-                help="Seleccione el tipo de capa que desea añadir."
+                help="""Seleccione el tipo de capa que desea añadir. Cada tipo tiene un propósito específico en la red neuronal:
+                - **Dense**: Totalmente conectada, útil para patrones complejos.
+                - **Dropout**: Reduce el sobreajuste al desactivar neuronas aleatoriamente.
+                - **Conv2D**: Extrae patrones espaciales en imágenes.
+                - **MaxPooling2D**: Reduce dimensiones seleccionando características clave.
+                - **Flatten**: Convierte datos multidimensionales a un solo vector.
+                - **BatchNormalization**: Normaliza las salidas para estabilizar y acelerar el entrenamiento.""",
+                on_change=update_layer_config
             )
 
             # Configuración específica para cada tipo de capa
@@ -1599,32 +1508,41 @@ elif tabs == "Capas":
                     min_value=1,
                     value=layer.get('neurons', 64),
                     key=f"neurons_{i}",
-                    help="Número de neuronas en la capa densa."
+                    help="Define cuántas unidades tendrá esta capa para aprender patrones complejos. Un mayor número de neuronas puede capturar más información, pero podría incrementar el tiempo de entrenamiento.",
+                    on_change=update_layer_config
                 )
                 layer['activation'] = st.selectbox(
                     "Activación",
                     ["relu", "sigmoid", "tanh", "softmax","linear"],
                     index=["relu", "sigmoid", "tanh", "softmax","linear"].index(layer.get('activation', "relu")),
                     key=f"activation_{i}",
-                    help="Función de activación para la capa densa."
+                    help="""Función que determina cómo se transforman las salidas de esta capa.
+                    - **ReLU**: Ideal para muchas capas, evita valores negativos.
+                    - **Sigmoid**: Convierte salidas a un rango entre 0 y 1, útil para clasificación binaria.
+                    - **Tanh**: Rango entre -1 y 1, útil para datos centrados.
+                    - **Softmax**: Convierte salidas a probabilidades, ideal para clasificación multicategoría.
+                    - **Linear**: Mantiene las salidas sin cambios, útil en regresión.""",
+                    on_change=update_layer_config
                 )
                 # Checkbox para habilitar regularización L2
                 layer['enable_l2'] = st.checkbox(
                     "Habilitar Regularización L2",
                     value=layer.get('enable_l2', False),
                     key=f"enable_l2_{i}",
-                    help="Activa la regularización L2 para esta capa."
+                    help="Penaliza grandes valores de los pesos para evitar el sobreajuste. Utilízalo si notas que el modelo se ajusta demasiado a los datos de entrenamiento.",
+                    on_change=update_layer_config
                 )
                 if layer['enable_l2']:
                     # Slider para definir el coeficiente L2 si está habilitado
                     layer['l2'] = st.slider(
                         "Regularización L2",
-                        min_value=0.0,
+                        min_value=0.001,
                         max_value=0.1,
                         value=layer.get('l2', 0.01),
-                        step=0.01,
-                        key=f"l2_{i}",
-                        help="Coeficiente de regularización L2 para los pesos de la capa densa."
+                        step=0.001,
+                        key=f"l3_{i}",
+                        help="Controla la intensidad de la penalización en los pesos. Valores más altos aplican más restricción.",
+                        on_change=update_layer_config
                     )
             elif layer['type'] == "Dropout":
                 layer['dropout_rate'] = st.slider(
@@ -1634,7 +1552,8 @@ elif tabs == "Capas":
                     value=layer.get('dropout_rate', 0.2),
                     step=0.1,
                     key=f"dropout_{i}",
-                    help="Proporción de unidades que se desactivarán aleatoriamente en esta capa."
+                    help="Porcentaje de neuronas que se desactivarán aleatoriamente durante el entrenamiento. Ayuda a prevenir el sobreajuste y mejora la generalización del modelo.",
+                    on_change=update_layer_config
                 )
             elif layer['type'] == "Conv2D":
                 layer['filters'] = st.number_input(
@@ -1642,42 +1561,49 @@ elif tabs == "Capas":
                     min_value=1,
                     value=layer.get('filters', 32),
                     key=f"filters_{i}",
-                    help="Define cuántos filtros utilizará esta capa de convolución."
+                    help="Número de detectores de características que analizarán las entradas. Más filtros pueden detectar patrones más variados, pero incrementan el tiempo de entrenamiento.",
+                    on_change=update_layer_config
                 )
                 layer['kernel_size'] = st.slider(
                     "Tamaño del Kernel",
                     min_value=1,
                     max_value=5,
+                    on_change=update_layer_config,
                     value=layer.get('kernel_size', 3),
                     step=1,
                     key=f"kernel_{i}",
-                    help="Tamaño del filtro o kernel que se moverá sobre la entrada."
+                    help="Tamaño del filtro que se mueve sobre la entrada. Por ejemplo, un kernel de 3x3 analiza pequeños fragmentos de la entrada a la vez."
                 )
                 layer['activation'] = st.selectbox(
                     "Activación",
                     ["relu", "sigmoid", "tanh", "softmax","linear"],
                     index=["relu", "sigmoid", "tanh", "softmax","linear"].index(layer.get('activation', "relu")),
                     key=f"activation_conv_{i}",
-                    help="Función de activación para la capa de convolución."
-                )
+                    on_change=update_layer_config,
+                    help="""Función que transforma las salidas de la convolución.
+                        - **ReLU**: Comúnmente usada en capas convolucionales.
+                        - **Sigmoid** y **Tanh**: Útiles en casos específicos como segmentación de imágenes."""
+                    )
             elif layer['type'] == "MaxPooling2D":
                 layer['pool_size'] = st.slider(
                     "Tamaño del Pool",
                     min_value=1,
                     max_value=5,
+                    on_change=update_layer_config,
                     value=layer.get('pool_size', 2),
                     step=1,
                     key=f"pool_size_{i}",
-                    help="Tamaño de la ventana para la operación de pooling."
+                    help="Tamaño de la ventana utilizada para reducir las dimensiones. Por ejemplo, un tamaño de pool de 2x2 seleccionará el valor máximo en cada área de 2x2 píxeles."
                 )
             elif layer['type'] == "Flatten":
-                st.info("Capa que aplana la entrada para conectarla con capas densas.")
+                on_change=update_layer_config
+                st.info("Capa que convierte entradas multidimensionales en un único vector. Esto es necesario para conectar capas convolucionales con capas densas.")
             elif layer['type'] == "BatchNormalization":
-                st.info("Capa para normalizar las salidas de la capa anterior y estabilizar el entrenamiento.")
+                on_change=update_layer_config
+                st.info("Capa que normaliza las salidas de la capa anterior para estabilizar el entrenamiento. Es especialmente útil en redes profundas para acelerar la convergencia.")
 
             # Actualizar el nombre de la capa
             layer['name'] = f"{layer['type']}{i + 1}"
-
 
 
 
@@ -1721,15 +1647,23 @@ elif tabs == "Hiperparámetros":
     )
 
 
-# Configuración de Early Stopping
 elif tabs == "Early Stopping":
     st.sidebar.subheader("Early Stopping")
+
+    # Verificar si el conjunto de validación está disponible
+    has_validation_data = len(st.session_state.get('splits', [])) == 6
+
     enable_early_stopping = st.sidebar.checkbox(
         "Habilitar Early Stopping",
         value=False,
-        help="Detiene el entrenamiento si no hay mejora en la métrica monitoreada después de un número determinado de épocas."
+        help="Detiene el entrenamiento si no hay mejora en la métrica monitoreada después de un número determinado de épocas.",
+        disabled=not has_validation_data  # Deshabilitar si no hay validación
     )
-    if enable_early_stopping:
+
+    if not has_validation_data:
+        st.sidebar.warning("El conjunto de validación no está configurado. Early Stopping requiere un conjunto de validación.")
+
+    if enable_early_stopping and has_validation_data:
         patience = st.sidebar.number_input(
             "Patience (Número de épocas sin mejora)",
             min_value=1,
@@ -1744,12 +1678,21 @@ elif tabs == "Early Stopping":
             index=0,
             help="Métrica que se monitoreará para decidir si detener el entrenamiento."
         )
+        st.session_state['early_stopping'] = {
+            "enabled": enable_early_stopping,
+            "patience": patience,
+            "monitor": monitor_metric
+        }
+    else:
+        st.session_state['early_stopping'] = {
+            "enabled": False
+        }
 
 
 
 # Checkbox para mostrar/ocultar métricas (siempre disponible)
 st.session_state['show_metrics'] = st.checkbox(
-    "Mostrar Gráficos de Métricas",
+    "Mostrar Gráficos en tiempo de entrenamiento",
     value=st.session_state.get('show_metrics', False),
     disabled=st.session_state['training_in_progress']  # Deshabilitar si está entrenando
 )
@@ -1771,7 +1714,7 @@ if not st.session_state['training_in_progress']:
 
 # Botón para iniciar el entrenamiento
 if not st.session_state['training_in_progress'] and not st.session_state['training_finished']:
-    if st.button("Comenzar entrenamiento"):
+    if st.button("Comenzar entrenamiento", disabled = st.session_state['disabled_button_train']):
         reset_training_state()  # Resetear estados antes de iniciar
         st.rerun()
 
@@ -1826,68 +1769,140 @@ if st.session_state['training_finished']:
         st.session_state['modelDownload'].save("trained_model.h5")
         with open("trained_model.h5", "rb") as file:
             st.download_button("Descargar Modelo", file, file_name="trained_model.h5")
-
-    # Mostrar gráficos detallados de métricas bajo un checkbox
+    # Botón para reiniciar el entrenamiento
+    if st.button("Comenzar Entrenamiento"):
+        reset_training_state()
+        st.rerun()
+# Mostrar gráficos detallados de métricas bajo un checkbox
     if st.checkbox("Mostrar Gráficos de Métricas finales", key="show_final_metrics"):
+        st.header("📊 Métricas finales")
+
         col1, col2 = st.columns(2)  # Dividir gráficos en columnas para mejor organización
 
-        # Gráfico de pérdida
-        with col1:
-            st.write("#### Pérdida por Época")
-            fig_loss = go.Figure()
-            fig_loss.add_trace(go.Scatter(
-                x=list(range(1, len(st.session_state['loss_values']) + 1)),
-                y=st.session_state['loss_values'],
-                mode='lines+markers',
-                name="Pérdida de Entrenamiento",
-                line=dict(color='blue')
-            ))
-            if st.session_state['val_loss_values']:
+        if st.session_state['problem_type'] == "Clasificación":
+            # Gráfico de pérdida
+            with col1:
+                st.write("#### Pérdida por Época")
+                with st.expander("¿Qué significa este gráfico?"):
+                    st.write("Este gráfico muestra cómo la pérdida (error) cambia en cada época. Una tendencia descendente indica que el modelo está aprendiendo y ajustándose mejor a los datos.")
+                fig_loss = go.Figure()
                 fig_loss.add_trace(go.Scatter(
-                    x=list(range(1, len(st.session_state['val_loss_values']) + 1)),
-                    y=st.session_state['val_loss_values'],
+                    x=list(range(1, len(st.session_state['loss_values']) + 1)),
+                    y=st.session_state['loss_values'],
                     mode='lines+markers',
-                    name="Pérdida de Validación",
-                    line=dict(color='red', dash='dash')
+                    name="Pérdida de Entrenamiento",
+                    line=dict(color='blue')
                 ))
-            fig_loss.update_layout(
-                title="Pérdida por Época",
-                xaxis_title="Época",
-                yaxis_title="Pérdida",
-                legend_title="Tipo"
-            )
-            st.plotly_chart(fig_loss, use_container_width=True)
-
-        # Gráfico de precisión
-        with col2:
-            if st.session_state['accuracy_values']:
-                st.write("#### Precisión por Época")
-                fig_acc = go.Figure()
-                fig_acc.add_trace(go.Scatter(
-                    x=list(range(1, len(st.session_state['accuracy_values']) + 1)),
-                    y=st.session_state['accuracy_values'],
-                    mode='lines+markers',
-                    name="Precisión de Entrenamiento",
-                    line=dict(color='green')
-                ))
-                if st.session_state['val_accuracy_values']:
-                    fig_acc.add_trace(go.Scatter(
-                        x=list(range(1, len(st.session_state['val_accuracy_values']) + 1)),
-                        y=st.session_state['val_accuracy_values'],
+                if st.session_state['val_loss_values']:
+                    fig_loss.add_trace(go.Scatter(
+                        x=list(range(1, len(st.session_state['val_loss_values']) + 1)),
+                        y=st.session_state['val_loss_values'],
                         mode='lines+markers',
-                        name="Precisión de Validación",
-                        line=dict(color='orange', dash='dash')
+                        name="Pérdida de Validación",
+                        line=dict(color='red', dash='dash')
                     ))
-                fig_acc.update_layout(
-                    title="Precisión por Época",
+                fig_loss.update_layout(
+                    title="Pérdida por Época",
                     xaxis_title="Época",
-                    yaxis_title="Precisión",
+                    yaxis_title="Pérdida",
                     legend_title="Tipo"
                 )
-                st.plotly_chart(fig_acc, use_container_width=True)
+                st.plotly_chart(fig_loss, use_container_width=True)
+
+            # Gráfico de precisión
+            with col2:
+                if st.session_state['accuracy_values']:
+                    st.write(
+                        "#### Precisión por Época",
+                    )
+                    with st.expander("¿Qué significa este gráfico?"):
+                        st.write("Este gráfico muestra cómo la precisión del modelo cambia en cada época. Una tendencia ascendente indica que el modelo está mejorando en sus predicciones.")
+                    fig_acc = go.Figure()
+                    fig_acc.add_trace(go.Scatter(
+                        x=list(range(1, len(st.session_state['accuracy_values']) + 1)),
+                        y=st.session_state['accuracy_values'],
+                        mode='lines+markers',
+                        name="Precisión de Entrenamiento",
+                        line=dict(color='green')
+                    ))
+                    if st.session_state['val_accuracy_values']:
+                        fig_acc.add_trace(go.Scatter(
+                            x=list(range(1, len(st.session_state['val_accuracy_values']) + 1)),
+                            y=st.session_state['val_accuracy_values'],
+                            mode='lines+markers',
+                            name="Precisión de Validación",
+                            line=dict(color='orange', dash='dash')
+                        ))
+                    fig_acc.update_layout(
+                        title="Precisión por Época",
+                        xaxis_title="Época",
+                        yaxis_title="Precisión",
+                        legend_title="Tipo"
+                    )
+                    st.plotly_chart(fig_acc, use_container_width=True)
+
+
+        elif st.session_state['problem_type'] == "Regresión":
+            # Gráfico de Pérdida (MSE)
+            with col1:
+                st.write("#### Pérdida por Época (MSE)")
+                with st.expander("¿Qué significa este gráfico?"):
+                    st.write("Este gráfico muestra cómo cambia el error cuadrático medio (MSE) durante el entrenamiento. Una pérdida menor indica que el modelo se está ajustando mejor a los datos.")
+                fig_loss = go.Figure()
+                fig_loss.add_trace(go.Scatter(
+                    x=list(range(1, len(st.session_state['loss_values']) + 1)),
+                    y=st.session_state['loss_values'],
+                    mode='lines+markers',
+                    name="Pérdida de Entrenamiento (MSE)",
+                    line=dict(color='blue')
+                ))
+                if st.session_state['val_loss_values']:
+                    fig_loss.add_trace(go.Scatter(
+                        x=list(range(1, len(st.session_state['val_loss_values']) + 1)),
+                        y=st.session_state['val_loss_values'],
+                        mode='lines+markers',
+                        name="Pérdida de Validación (MSE)",
+                        line=dict(color='red', dash='dash')
+                    ))
+                fig_loss.update_layout(
+                    title="Pérdida por Época (MSE)",
+                    xaxis_title="Época",
+                    yaxis_title="Pérdida (MSE)",
+                    legend_title="Tipo"
+                )
+                st.plotly_chart(fig_loss, use_container_width=True)
+
+            # Gráfico de Precisión (MAE)
+            with col2:
+                st.write("#### Precisión por Época (MAE)")
+                with st.expander("¿Qué significa este gráfico?"):
+                    st.write("Este gráfico muestra cómo cambia el error absoluto medio (MAE) durante el entrenamiento. Un MAE menor indica que las predicciones del modelo están más cerca de los valores reales.")
+        
+                fig_mae = go.Figure()
+                fig_mae.add_trace(go.Scatter(
+                    x=list(range(1, len(st.session_state['mae_values']) + 1)),
+                    y=st.session_state['mae_values'],
+                    mode='lines+markers',
+                    name="Precisión de Entrenamiento (MAE)",
+                    line=dict(color='green')
+                ))
+                if st.session_state['val_mae_values']:
+                    fig_mae.add_trace(go.Scatter(
+                        x=list(range(1, len(st.session_state['val_mae_values']) + 1)),
+                        y=st.session_state['val_mae_values'],
+                        mode='lines+markers',
+                        name="Precisión de Validación (MAE)",
+                        line=dict(color='orange', dash='dash')
+                    ))
+                fig_mae.update_layout(
+                    title="Precisión por Época (MAE)",
+                    xaxis_title="Época",
+                    yaxis_title="Precisión (MAE)",
+                    legend_title="Tipo"
+                )
+                st.plotly_chart(fig_mae, use_container_width=True)
 
         # Métricas finales según el tipo de problema
-        st.write("#### Métricas Finales")
         if st.session_state['problem_type'] == "Clasificación":
             # Verificar que el modelo exista
             if "modelDownload" not in st.session_state or st.session_state["modelDownload"] is None:
@@ -1910,6 +1925,10 @@ if st.session_state['training_finished']:
                 st.error("Tipo de división desconocido. Revisa la configuración.")
                 st.stop()
 
+
+
+
+
             # Predicción
             predictions = model.predict(X_test)
             y_pred = np.argmax(predictions, axis=1)
@@ -1921,12 +1940,31 @@ if st.session_state['training_finished']:
 
             # Calcular métricas
             f1 = f1_score(y_test_original, y_pred, average='weighted')
+            st.session_state['f1_score'] = f1
             precision = precision_score(y_test_original, y_pred, average='weighted')
+            st.session_state['precision_score'] = precision
             recall = recall_score(y_test_original, y_pred, average='weighted')
+            st.session_state['recall_score'] = recall
 
             # Visualización de la matriz de confusión
             cm = confusion_matrix(y_test_original, y_pred)
-            st.write("Matriz de confusión:")
+            st.session_state['confusion_matrix'] = cm
+            st.write("#### Matriz de confusión:")
+            with st.expander("¿Qué significa esta matriz?"):
+                st.write("""
+                Una matriz de confusión compara las predicciones del modelo con los valores reales. Cada celda representa:
+                
+                - **Fila**: La clase real.
+                - **Columna**: La clase predicha.
+                
+                Interpretación:
+                - **Diagonal principal**: Cantidad de predicciones correctas.
+                - **Fuera de la diagonal**: Errores de predicción (predicciones incorrectas).
+                
+                Por ejemplo:
+                - Un valor alto en la diagonal principal indica que el modelo predijo correctamente para esa clase.
+                - Un valor alto fuera de la diagonal indica errores específicos entre dos clases.
+                """)
             fig, ax = plt.subplots()
             disp = ConfusionMatrixDisplay(confusion_matrix=cm)
             disp.plot(ax=ax)
@@ -1935,29 +1973,354 @@ if st.session_state['training_finished']:
             # Comparar predicciones con etiquetas reales
             st.write("Comparación de predicciones individuales:")
             for i in range(min(5, len(y_test_original))):  # Mostrar máximo 5 ejemplos
-                st.write(f"Ejemplo {i+1}: Real: {y_test_original[i]}, Predicción: {y_pred[i]}")
+                if isinstance(y_test_original, np.ndarray):  # Si es un array de NumPy
+                    real_value = y_test_original[i]
+                else:  # Si es un DataFrame o Serie de Pandas
+                    real_value = y_test_original.iloc[i]
+                
+                st.write(f"Ejemplo {i+1}: Real: {real_value}, Predicción: {y_pred[i]}")
 
             # Mostrar métricas
-            st.write(f"**F1 Score:** {f1:.4f}")
-            st.write(f"**Precisión (Precision):** {precision:.4f}")
-            st.write(f"**Recall:** {recall:.4f}")
+            # Mostrar métricas finales de clasificación
+            st.write("#### Métricas Finales")
+            st.text_input(
+                "**F1 Score:**",
+                f"{f1:.4f}",
+                help="El F1 Score es una medida de equilibrio entre precisión y recall, especialmente útil en datasets desbalanceados. Valores cercanos a 1 indican un buen rendimiento."
+            )
+            st.text_input(
+                "**Precisión (Precision):**",
+                f"{precision:.4f}",
+                help="La precisión indica qué proporción de las predicciones positivas es correcta. Es clave en problemas donde los falsos positivos son costosos."
+            )
+            st.text_input(
+                "**Recall:**",
+                f"{recall:.4f}",
+                help="El recall indica qué proporción de los casos positivos reales fue correctamente identificada. Es clave cuando los falsos negativos son costosos."
+            )
 
         else:  # Para regresión
             final_loss = st.session_state['loss_values'][-1]
-            st.write(f"**Pérdida Final (MAE):** {final_loss:.4f}")
+            final_mae = st.session_state['mae_values'][-1]  # Precisión final (MAE)
+            # Métricas finales de regresión
+            st.text_input(
+                "**Pérdida Final (MSE):**",
+                f"{final_loss:.4f}",
+                help="El Mean Squared Error (MSE) mide el error promedio cuadrático entre los valores reales y las predicciones. Valores más bajos indican mayor precisión."
+            )
+            st.text_input(
+                "**Precisión Final (MAE):**",
+                f"{final_mae:.4f}",
+                help="El Mean Absolute Error (MAE) mide el error promedio absoluto entre los valores reales y las predicciones. Es más robusto frente a valores atípicos en comparación con el MSE."
+            )
             if st.session_state['val_loss_values']:
                 final_val_loss = st.session_state['val_loss_values'][-1]
-                st.write(f"**Pérdida Validación Final (MAE):** {final_val_loss:.4f}")
+                final_val_mae = st.session_state['val_mae_values'][-1]  # Precisión validación (MAE)
+                st.write(f"**Pérdida Validación Final (MSE):** {final_val_loss:.4f}")
+                st.write(f"**Precisión Validación Final (MAE):** {final_val_mae:.4f}")
 
             # Gráfico de métricas finales (regresión)
             fig_metrics = go.Figure()
-            fig_metrics.add_trace(go.Bar(name="Pérdida Final", x=["Pérdida"], y=[final_loss], marker_color='blue'))
+            fig_metrics.add_trace(go.Bar(
+                name="Pérdida Final (MSE)",
+                x=["Pérdida"],
+                y=[final_loss],
+                marker_color='blue'
+            ))
+            fig_metrics.add_trace(go.Bar(
+                name="Precisión Final (MAE)",
+                x=["Precisión"],
+                y=[final_mae],
+                marker_color='green'
+            ))
             if 'val_loss_values' in st.session_state and st.session_state['val_loss_values']:
-                fig_metrics.add_trace(go.Bar(name="Pérdida Validación", x=["Pérdida Validación"], y=[final_val_loss], marker_color='red'))
-            fig_metrics.update_layout(title="Pérdidas Finales", barmode="group")
+                fig_metrics.add_trace(go.Bar(
+                    name="Pérdida Validación (MSE)",
+                    x=["Pérdida Validación"],
+                    y=[final_val_loss],
+                    marker_color='red'
+                ))
+                fig_metrics.add_trace(go.Bar(
+                    name="Precisión Validación (MAE)",
+                    x=["Precisión Validación"],
+                    y=[final_val_mae],
+                    marker_color='orange'
+                ))
+            fig_metrics.update_layout(
+                title="Métricas Finales (Regresión)",
+                barmode="group",
+                xaxis_title="Métrica",
+                yaxis_title="Valor"
+            )
             st.plotly_chart(fig_metrics, use_container_width=True)
 
-    # Botón para reiniciar el entrenamiento
-    if st.button("Comenzar Entrenamiento"):
-        reset_training_state()
-        st.rerun()
+            # Comparar predicciones con valores reales (prueba)
+            model = st.session_state["modelDownload"]
+            split_type = st.session_state["split_type"]
+
+            if split_type == "Entrenamiento y Prueba":
+                X_test = st.session_state["splits"][1]
+                y_test_original = st.session_state["splits"][3]
+            elif split_type == "Entrenamiento, Validación y Prueba":
+                X_test = st.session_state["splits"][2]
+                y_test_original = st.session_state["splits"][5]
+            else:
+                st.error("Tipo de división desconocido. Revisa la configuración.")
+                st.stop()
+
+            # Revertir escalado si se aplicó
+            if "scaler_y" in st.session_state and st.session_state["scaler_y"] is not None:
+                scaler = st.session_state["scaler_y"]
+                y_test_original = scaler.inverse_transform(y_test_original.reshape(-1, 1)).flatten()
+                y_pred = scaler.inverse_transform(model.predict(X_test).reshape(-1, 1)).flatten()
+            else:
+                y_pred = model.predict(X_test).flatten()
+                y_test_original = y_test_original.flatten()
+
+            # Comparación de predicciones con valores reales
+            st.write(
+                "#### Comparación de Predicciones con Valores Reales",
+            )
+            with st.expander("¿Qué significa este gráfico?"):
+                st.write("""
+                Este gráfico compara los valores reales (lo que deberíamos obtener) con las predicciones realizadas por el modelo.
+                
+                Interpretación:
+                - **Línea Azul (Valores Reales)**: Representa los valores verdaderos del dataset de prueba.
+                - **Línea Verde (Predicciones)**: Representa los valores que el modelo ha predicho.
+                
+                Un buen modelo debería tener las líneas muy cercanas, lo que indica que las predicciones se aproximan bien a los valores reales.
+                
+                ¿Qué buscar?
+                - Si las líneas están muy separadas, podría ser una señal de que el modelo no está generalizando bien.
+                - Si las líneas se cruzan constantemente, indica un modelo que sigue las tendencias correctamente.
+                """)
+            for i in range(min(5, len(y_test_original))):  # Mostrar máximo 5 ejemplos
+                st.write(f"Ejemplo {i+1}: Real: {float(y_test_original[i]):.4f}, Predicción: {float(y_pred[i]):.4f}")
+
+            # Gráfico de comparación
+            fig_comparison = go.Figure()
+            fig_comparison.add_trace(go.Scatter(
+                x=list(range(len(y_test_original))),
+                y=y_test_original,
+                mode='lines+markers',
+                name="Real",
+                line=dict(color='blue')
+            ))
+            fig_comparison.add_trace(go.Scatter(
+                x=list(range(len(y_pred))),
+                y=y_pred,
+                mode='lines+markers',
+                name="Predicción",
+                line=dict(color='green', dash='dash')
+            ))
+            fig_comparison.update_layout(
+                title="Comparación de Predicciones y Valores Reales",
+                xaxis_title="Índice de Prueba",
+                yaxis_title="Valor",
+                legend_title="Tipo"
+            )
+            st.plotly_chart(fig_comparison, use_container_width=True)
+
+# Probar el modelo guardado
+if st.session_state["training_finished"] and st.session_state["modelDownload"]:
+    
+    if st.checkbox("Probar modelo", key="Test_model"):
+
+        st.header("🔍 Probar el Modelo")
+
+        # Mostrar instrucciones para el usuario
+        st.write("Modifique los valores de las características para probar el modelo y observe cómo cambian las predicciones.")
+
+        # Recuperar el modelo entrenado
+        model = st.session_state["modelDownload"]
+
+        # Determinar las características del dataset
+        if "splits" in st.session_state:
+            if st.session_state["split_type"] == "Entrenamiento y Prueba":
+                X_test = st.session_state["splits"][1]  # Tomar X_test para pruebas
+                y_test = st.session_state["splits"][3]  # Tomar y_test para pruebas
+            elif st.session_state["split_type"] == "Entrenamiento, Validación y Prueba":
+                X_test = st.session_state["splits"][2]  # Tomar X_test para pruebas      
+                y_test = st.session_state["splits"][5]  # Tomar y_test para pruebas      
+        else:
+            st.error("No se encontró el conjunto de datos de prueba.")
+            st.stop()
+
+        # Crear sliders para cada característica (en su forma original)
+        input_data = {}
+        original_X_test = X_test.copy()  # Copia del conjunto de prueba original
+
+        # Revertir escalamiento de X_test si se aplicó escalamiento
+        if "scaler_x" in st.session_state and st.session_state["scaler_x"] is not None:
+            scaler = st.session_state["scaler_x"]
+              # Validar si las dimensiones son compatibles
+            if scaler.scale_.shape[0] == X_test.shape[1]:
+                original_X_test[:] = scaler.inverse_transform(X_test)
+            else:
+                st.error("Dimensiones incompatibles entre el escalador y el conjunto de prueba.")
+                st.stop()
+
+        # Configurar sliders basados en los valores originales
+        for col in X_test.columns:
+            min_val = original_X_test[col].min()
+            max_val = original_X_test[col].max()
+            default_val = original_X_test[col].iloc[0]
+
+            input_data[col] = st.slider(
+                f"Modificar {col}",
+                float(min_val),
+                float(max_val),
+                float(default_val),
+                step=(max_val - min_val) / 100  # Paso del slider
+            )
+
+        # Convertir los datos de entrada a un DataFrame
+        input_df = pd.DataFrame([input_data])
+
+        # Escalar los datos de entrada nuevamente para la predicción si se aplicó escalamiento
+        if "scaler_x" in st.session_state and st.session_state["scaler_x"] is not None:
+            input_df = st.session_state["scaler_x"].transform(input_df)
+
+        # Generar predicción
+        prediction = model.predict(input_df)
+
+        # Mostrar resultados según el tipo de problema
+        if st.session_state["problem_type"] == "Clasificación":
+            # Si es clasificación, revertir las etiquetas codificadas si aplica
+            if "label_encoder" in st.session_state:
+                predicted_class = st.session_state["label_encoder"].inverse_transform([np.argmax(prediction, axis=1)[0]])[0]
+            else:
+                predicted_class = np.argmax(prediction, axis=1)[0]
+
+            # Obtener el nombre de la columna objetivo
+            target_column_name = st.session_state.get("target_variable", "Variable Objetivo")
+
+            # Mostrar la predicción con el nombre de la columna objetivo
+            st.subheader(f"Predicción de la variable '{target_column_name}'")
+            st.write(f"Clase predicha: {predicted_class}")
+
+            # Si el modelo permite probabilidades, mostrarlas
+            if hasattr(model, "predict_proba"):
+                st.write("Probabilidades:")
+                for idx, prob in enumerate(prediction[0]):
+                    st.write(f"Clase {idx}: {prob:.4f}")
+
+        elif st.session_state["problem_type"] == "Regresión":
+            # Revertir el escalamiento del valor predicho si aplica
+            if "scaler_y" in st.session_state:
+                prediction = st.session_state["scaler_y"].inverse_transform(prediction.reshape(-1, 1)).flatten()
+
+            # Obtener el nombre de la columna objetivo
+            target_column_name = st.session_state.get("target_variable", "Variable Objetivo")
+
+            # Mostrar la predicción con el nombre de la columna objetivo
+            st.subheader(f"Predicción de la variable '{target_column_name}'")
+            st.write(f"Valor predicho: {prediction[0]:.4f}")
+
+        if st.session_state["problem_type"] == "Clasificación":
+            if "label_encoder" in st.session_state:
+                y_test_original = st.session_state["label_encoder"].inverse_transform(y_test)
+            else:
+                y_test_original = y_test
+
+            st.write("### Valores reales disponibles:")
+
+            if isinstance(y_test_original, np.ndarray):  # Si es un array de NumPy
+                unique_values = np.unique(y_test_original)  # Obtener valores únicos
+            else:  # Si es un DataFrame o Serie de Pandas
+                unique_values = y_test_original.unique()  # Obtener valores únicos
+
+            # Mostrar valores únicos en una lista ordenada
+            st.write(f"#### Valores únicos encontrados ({len(unique_values)}):")
+            st.markdown("  \n".join([f"- **{val}**" for val in unique_values]))
+        elif st.session_state["problem_type"] == "Regresión":
+            y_test_original = y_test
+
+            # Revertir el escalamiento de los valores reales si aplica
+            if "scaler_y" in st.session_state:
+                y_test_original = st.session_state["scaler_y"].inverse_transform(y_test_original.reshape(-1, 1)).flatten()
+
+            st.write("Primeros 5 valores reales disponibles:")
+            st.write(y_test_original[:5])
+
+
+
+if st.session_state["training_finished"] and st.session_state["modelDownload"]:
+    # Función para convertir objetos no serializables a JSON
+    def serialize_object(obj):
+        if isinstance(obj, pd.DataFrame):
+            return obj.to_dict(orient="list")  # Convertir DataFrame a diccionario
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()  # Convertir ndarray a lista
+        elif isinstance(obj, list):
+            return [serialize_object(item) for item in obj]  # Procesar listas recursivamente
+        elif isinstance(obj, dict):
+            return {key: serialize_object(value) for key, value in obj.items()}  # Procesar diccionarios recursivamente
+        return obj  # Devolver el objeto original si es compatible
+
+    # Botón para exportar configuración
+    if st.button("Exportar Configuración del Modelo"):
+        # Determinar tipo de división
+        splits = st.session_state.get("splits", [])
+        split_type = "Entrenamiento y Prueba" if len(splits) == 4 else "Entrenamiento, Validación y Prueba"
+
+        # Recopilar métricas según el tipo de problema
+        problem_type = st.session_state.get("problem_type", "Clasificación")
+        metrics = {
+            "Clasificación": {
+                "loss_values": st.session_state.get("loss_values"),
+                "accuracy_values": st.session_state.get("accuracy_values"),
+                "val_loss_values": st.session_state.get("val_loss_values"),
+                "val_accuracy_values": st.session_state.get("val_accuracy_values"),
+                "confusion_matrix": st.session_state.get("confusion_matrix"),
+                "f1_score": st.session_state.get("f1_score"),
+                "precision": st.session_state.get("precision_score"),
+                "recall": st.session_state.get("recall_score"),
+            },
+            "Regresión": {
+                "loss_values": st.session_state.get("loss_values"),
+                "mae_values": st.session_state.get("mae_values"),
+                "val_loss_values": st.session_state.get("val_loss_values"),
+                "val_mae_values": st.session_state.get("val_mae_values"),
+                "mse": st.session_state.get("mse"),
+                "rmse": st.session_state.get("rmse"),
+            }
+        }.get(problem_type, {})
+
+        # Recopilar datos relevantes
+        config_data = {
+            "dataset": {
+                "selected_dataset": st.session_state.get("selected_dataset"),
+                "train_ratio": st.session_state.get("train_ratio"),
+                "val_ratio": st.session_state.get("val_ratio"),
+                "test_ratio": st.session_state.get("test_ratio"),
+                "split_type": split_type,
+                "target_variable": st.session_state.get("target_variable"),
+                "columns_removed": st.session_state.get("columns_removed"),
+                "missing_handled": st.session_state.get("missing_handled"),
+                "categorical_encoded": st.session_state.get("categorical_encoded"),
+                "scaling_done": st.session_state.get("scaling_done"),
+            },
+            "layer_config": st.session_state.get("layer_config"),
+            "hyperparams": st.session_state.get("hyperparams"),
+            "early_stopping": st.session_state.get("early_stopping"),
+            "metrics": serialize_object(metrics),
+        }
+
+        # Serializar el objeto de configuración
+        serialized_data = serialize_object(config_data)
+
+        # Convertir a JSON y mostrar
+        config_json = json.dumps(serialized_data, indent=4)
+        st.json(json.loads(config_json))  # Mostrar configuración en la app
+
+        serialized_data = serialize_object(config_data)
+        st.session_state['serialized_results'] = serialized_data
+        # Descargar archivo JSON
+        st.download_button(
+            label="Descargar Configuración como JSON",
+            data=config_json,
+            file_name="model_config.json",
+            mime="application/json"
+        )
