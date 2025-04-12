@@ -366,7 +366,7 @@ def generate_graph_fig(layers, active_layer=None, epoch=None, neurons_per_point=
         ))
 
     # Configuración del gráfico
-    title = f"Training Progress - Epoch {epoch + 1}" if epoch is not None else "Network Architecture Preview"
+    title = f"Training Progress - Epoch {epoch + 1}" if epoch is not None else "Vista previa de la arquitectura de capas"
     fig.update_layout(
         title=title,
         showlegend=False,
